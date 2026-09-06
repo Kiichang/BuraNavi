@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- ★追加:短縮URLを展開するためにインターネット通信を行うので、ネット権限が必要 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:theme="@style/Theme.BuraNavi">
+
+        <!-- 既存のメイン画面(アプリアイコンから起動したとき用) -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- ★追加:共有シートに表示されるようにするためのActivity -->
+        <activity
+            android:name=".ShareReceiverActivity"
+            android:exported="true"
+            android:label="BuraNaviへ送信"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <!--
+                このintent-filterがあることで、他のアプリ(Googleマップなど)の
+                「共有」メニューにこのアプリが選択肢として表示されるようになる
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <!-- text/plain = 「文字列」を共有された場合のみ、このアプリで受け取れる -->
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
+    </application>
+</manifest>
