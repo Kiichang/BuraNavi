@@ -21,11 +21,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
 // ★追加:背景色を指定するために必要
 import androidx.compose.foundation.background
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -33,17 +31,11 @@ import androidx.wear.compose.material.MaterialTheme  // ← Wear OS用のみでO
 import androidx.wear.compose.material.Text            // ← Wear OS用のみでOK
 import com.google.android.gms.location.*
 // ★追加:MessageClientとMessageListenerを使うために必要
-import com.google.android.gms.wearable.MessageClient
-import com.google.android.gms.wearable.MessageEvent
-import com.google.android.gms.wearable.Wearable
-import android.util.Log
 // ★追加:Flowを画面(Compose)で監視するために必要
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import kotlinx.coroutines.flow.map
 // ★追加:画面の常時点灯設定に必要
 import android.view.WindowManager
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.ui.text.font.FontWeight
@@ -52,7 +44,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.runtime.LaunchedEffect
@@ -64,10 +55,68 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.tween
+// ★追加:バッテリー情報を扱うためのimport
+import android.content.BroadcastReceiver
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.BatteryManager
+// ★追加:時刻表示に必要なimport
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import android.content.Context
+import com.example.buranavi.R
+import androidx.compose.ui.res.painterResource
+
+// ★追加:バッテリー残量を保持する状態
+private val batteryLevelText = mutableStateOf("-")
+
+// ★追加:バッテリー残量が変化するたびに呼ばれる受信機(レシーバー)
+private val batteryReceiver = object : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        // Intent(システムからの通知)の中から、現在の残量と満充電時の値を取り出す
+        val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+        val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+
+        if (level != -1 && scale != -1) {
+            // パーセンテージに変換(例:level=80, scale=100 → 80%)
+            val batteryPercent = (level * 100) / scale
+            batteryLevelText.value = "$batteryPercent%"
+        }
+    }
+}
 
 // ComponentActivity: Composeを使う画面のベースとなるクラス
 // ★変更点:SensorEventListenerを実装(=センサーの値変化を受け取れるようにする)
 class MainActivity : ComponentActivity(), SensorEventListener {
+
+    // ★追加:歩数・心拍数を保持するセンサー変数
+    private var stepCounterSensor: Sensor? = null
+    private var heartRateSensor: Sensor? = null
+
+    // ★追加:画面表示用の状態(取得できるまでは "-" と表示しておく)
+    private val stepsText = mutableStateOf("-")
+    private val heartRateText = mutableStateOf("-")
+
+    // ★追加:歩数センサーは「起動からの累計歩数」を返す仕様のため、
+    //    アプリを開いた時点の歩数を基準値として記録しておき、そこからの増分を「今回の歩数」として表示する
+    private var stepCounterBaseline: Float? = null
+
+    // ★追加:歩数センサーを取得して登録する関数
+    private fun registerStepCounterSensor() {
+        stepCounterSensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
+        stepCounterSensor?.also { sensor ->
+            sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL)
+        }
+    }
+
+    // ★追加:心拍センサーを取得して登録する関数
+    private fun registerHeartRateSensor() {
+        heartRateSensor = sensorManager.getDefaultSensor(Sensor.TYPE_HEART_RATE)
+        heartRateSensor?.also { sensor ->
+            sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL)
+        }
+    }
 
     // ③ 位置情報を取得するためのクライアント(Googleのライブラリが用意してくれているクラス)
     //    lateinit var = 「後で必ず値を入れます」という宣言(onCreateの中で初期化する)
@@ -82,13 +131,26 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     //    registerForActivityResultは「結果が返ってくる処理」を登録する仕組み
     //    ユーザーが許可/拒否をタップした後、isGranted(true/false)がここに返ってくる
     private val requestPermissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
-            if (isGranted) {
-                // 許可された場合 → 位置情報の取得を開始
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
+            // permissionsは Map<String, Boolean> の形で返ってくる(各権限名がキー、許可結果が値)
+            val locationGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] ?: false
+
+            if (locationGranted) {
                 startLocationUpdates()
             } else {
-                // 拒否された場合 → 何もできないので、後でメッセージ表示などを検討
                 locationText.value = "位置情報の許可が必要です"
+            }
+
+            // ★追加:歩数・心拍センサーは、許可されていればそれぞれ登録処理を呼ぶ
+            //   (許可されなかった場合は、該当項目を表示しないだけにして、アプリ自体は問題なく動くようにする)
+            val activityRecognitionGranted = permissions[Manifest.permission.ACTIVITY_RECOGNITION] ?: false
+            val bodySensorsGranted = permissions[Manifest.permission.BODY_SENSORS] ?: false
+
+            if (activityRecognitionGranted) {
+                registerStepCounterSensor()
+            }
+            if (bodySensorsGranted) {
+                registerHeartRateSensor()
             }
         }
 
@@ -141,6 +203,30 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
         // ⑦ Composeで画面のUIを組み立てる部分
         setContent {
+
+            // ★追加:現在時刻を保持する状態。1分ごとに自動更新する
+            var currentTimeText by remember { mutableStateOf("") }
+
+            // ★追加:LaunchedEffect(Unit):画面が表示されている間、ずっと動き続ける処理
+            //    無限ループで「時刻を更新→1分待つ→また更新」を繰り返す
+            LaunchedEffect(Unit) {
+                while (true) {
+                    // val sdf = SimpleDateFormat("HH:mm", Locale.getDefault())
+                    // currentTimeText = sdf.format(Date())
+                    // delay(60000) // 60000ミリ秒 = 1分待つ
+                    val now = System.currentTimeMillis()
+                    val sdf = SimpleDateFormat(
+                        "HH:mm",
+                        Locale.getDefault()
+                    )
+                    currentTimeText = sdf.format(Date(now))
+
+                    // 次の「00秒」まで待つ
+                    val delayUntilNextMinute = 60_000L - (now % 60_000L)
+                    delay(delayUntilNextMinute)
+                }
+            }
+
             // ★追加:DataStoreのFlowを画面側で監視する
             //    collectAsState(): Flowから流れてくる値を、Composeが再描画できる「状態」に変換してくれる
             //    initial = null: まだ最初の値が届く前は、nullとして扱う
@@ -151,11 +237,16 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             //    (LaunchedEffectを使うのが一般的だが、まずはシンプルにこの形で進める)
             currentDestination = destinationFromStore
 
+            // ★追加:保存されている見た目の設定を監視する
+            val appSettings by observeAppSettings(applicationContext)
+                .collectAsState(initial = AppSettings.DEFAULT)
+
             MaterialTheme {
                 // ★追加:showSettingsScreenの値によって、表示する画面を丸ごと切り替える
                 if (showSettingsScreen) {
                     // ★追加:設定画面(中身は次のステップで作り込みます。今は仮の内容)
                     SettingsScreen(
+                        currentSettings = appSettings, // ★追加:現在の設定値を渡す
                         onBack = {
                             // 「戻る」が押されたら、メイン画面表示に戻す
                             showSettingsScreen = false
@@ -175,7 +266,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .background(Color.Black)
+                            // ★変更:固定のColor.Blackから、設定値の色を反映するように変更
+                            .background(Color(appSettings.backgroundColor))
                             // ★追加:画面のどこかをタップしたことを検知する仕組み
                             .pointerInput(Unit) {
                                 detectTapGestures(
@@ -195,14 +287,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         ) {
                             val arrowRotation = targetBearing - currentAzimuth
                             rotate(degrees = arrowRotation) {
-                                val arrowPath = Path().apply {
-                                    moveTo(size.width / 2, 0f)
-                                    lineTo(size.width * 0.75f, size.height)
-                                    lineTo(size.width / 2, size.height * 0.75f)
-                                    lineTo(size.width * 0.25f, size.height)
-                                    close()
-                                }
-                                drawPath(path = arrowPath, color = Color.Red)
+                                // ★変更:直接Pathを書いていた部分を、drawArrowShape関数の呼び出しに置き換え
+                                //    ArrayStyle.values()[インデックス] で、保存されている番号からenumを取り出す
+                                drawArrowShape(
+                                    style = ArrowStyle.values()[appSettings.arrowStyle],
+                                    color = Color(appSettings.arrowColor)
+                                )
                             }
                         }
 
@@ -215,6 +305,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                 .padding(top = 10.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
+                            if (appSettings.showTime) {
+                                Text(
+                                    text = currentTimeText,
+                                    color = Color.White,
+                                    fontSize = 14.sp
+                                )
+                            }
                             if (currentDestination == null) {
                                 Text(text = "目的地未設定", color = Color.Yellow)
                             } else {
@@ -236,7 +333,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                         color = Color.White,
                                         fontSize = 16.sp,
                                         // ★追加:単位の文字が数値の下端よりさらに沈んで見えるのを防ぐための微調整
-                                        modifier = Modifier.padding(bottom = 3.dp)
+                                        modifier = Modifier.padding(bottom = 2.dp)
                                     )
                                 }
                             }
@@ -250,7 +347,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             enter = fadeIn(animationSpec = tween(durationMillis = 0)),
                             // ★追加:消えるときのアニメーション(フェードアウト、0.5秒かけてゆっくり消える)
                             exit = fadeOut(animationSpec = tween(durationMillis = 500)),
-                            modifier = Modifier.align(Alignment.BottomCenter) // アイコンの位置
+                            modifier = Modifier.align(Alignment.CenterEnd) // アイコンの位置
                         ) {
                             IconButton(
                                 onClick = {
@@ -266,13 +363,97 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                 )
                             }
                         }
+
+                        // ★追加:時刻・バッテリー・歩数・心拍数を、画面下部にまとめて表示する
+                        Row(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = 30.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // ★追加:設定でONになっている項目だけを表示する
+                            // if (appSettings.showTime) {
+                            //     Text(text = currentTimeText, color = Color.White, fontSize = 12.sp)
+                            // }
+                            // if (appSettings.showBattery) {
+                            //     Text(text = "バッテリー: ${batteryLevelText.value}", color = Color.White, fontSize = 12.sp)
+                            // }
+                            if (appSettings.showBattery) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        painter = painterResource(id = R.drawable.battery),
+                                        contentDescription = "バッテリー",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+
+                                    Spacer(modifier = Modifier.width(0.dp))
+
+                                    Text(
+                                        text = batteryLevelText.value,
+                                        color = Color.White,
+                                        fontSize = 12.sp
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                }
+                            }
+                            if (appSettings.showSteps) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        painter = painterResource(id = R.drawable.footsteps),
+                                        contentDescription = "歩数",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+
+                                    Spacer(modifier = Modifier.width(2.dp))
+
+                                    Text(
+                                        text = stepsText.value,
+                                        color = Color.White,
+                                        fontSize = 12.sp
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                }
+                            }
+                            // if (appSettings.showSteps) {
+                            //     Text(text = "歩数: ${stepsText.value}", color = Color.White, fontSize = 12.sp)
+                            // }
+                            if (appSettings.showHeartRate) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        painter = painterResource(id = R.drawable.heart),
+                                        contentDescription = "心拍",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+
+                                    Spacer(modifier = Modifier.width(2.dp))
+
+                                    Text(
+                                        text = heartRateText.value,
+                                        color = Color.White,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            }
+                            // if (appSettings.showHeartRate) {
+                            //     Text(text = "心拍: ${heartRateText.value} bpm", color = Color.White, fontSize = 12.sp)
+                            // }
+                        }
                     }
                 }
             }
         }
 
         // ⑧ アプリ起動時に権限の状態をチェックする
-        checkLocationPermission()
+        checkAndRequestPermissions()
     }
 
     // ★追加:画面が表示されている間だけセンサーの値を受け取るようにする
@@ -284,12 +465,25 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             // SENSOR_DELAY_UI: UI表示用に適した更新頻度(頻繁すぎずカクつかない程度)
             sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_UI)
         }
+        // ★追加:既に許可されている場合のみ、歩数・心拍センサーも再登録する
+        stepCounterSensor?.also { sensor ->
+            sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL)
+        }
+        heartRateSensor?.also { sensor ->
+            sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL)
+        }
+        // ★追加:バッテリー情報の受信登録
+        //    IntentFilter(Intent.ACTION_BATTERY_CHANGED):
+        //    「バッテリー残量が変化した」というシステムからの通知だけを受け取る、という絞り込み条件
+        registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
     }
 
     // ★追加:画面から離れたらセンサーの購読を止める(バッテリー節約)
     override fun onPause() {
         super.onPause()
         sensorManager.unregisterListener(this)
+        // ★追加:バッテリー受信の解除
+        unregisterReceiver(batteryReceiver)
     }
 
     // ★追加:SensorEventListenerを実装したことで必須になるメソッド①
@@ -297,7 +491,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     override fun onSensorChanged(event: SensorEvent?) {
         if (event == null) return
 
-        if (event.sensor.type == Sensor.TYPE_ROTATION_VECTOR) {
+        when (event.sensor.type) {
+            Sensor.TYPE_ROTATION_VECTOR -> {
             // センサーの生データ(event.values)から「回転行列」を計算する
             // 回転行列:3D空間での端末の傾き・向きを表す数学的なデータ形式
             val rotationMatrix = FloatArray(9)
@@ -317,6 +512,30 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             // 度の値は-180〜180の範囲で返ってくるので、0〜360度に変換して保持
             currentAzimuth = (azimuthInDegrees + 360) % 360
         }
+            // ★追加:歩数センサーの処理
+            Sensor.TYPE_STEP_COUNTER -> {
+                val totalStepsSinceBoot = event.values[0]
+
+                // まだ基準値を記録していなければ、今回の値を基準として保存する
+                if (stepCounterBaseline == null) {
+                    stepCounterBaseline = totalStepsSinceBoot
+                }
+
+                // 基準値からの増分を「今回の歩数」として計算する
+                val stepsThisSession = (totalStepsSinceBoot - (stepCounterBaseline ?: totalStepsSinceBoot)).toInt()
+                stepsText.value = stepsThisSession.toString()
+            }
+
+            // ★追加:心拍センサーの処理
+            Sensor.TYPE_HEART_RATE -> {
+                val bpm = event.values[0]
+                // 心拍センサーは、まだ指(手首)にセンサーが密着していないときなどに「0」を返すことがあるため、
+                // 0以下の場合は「取得中」の表示のままにしておく
+                if (bpm > 0) {
+                    heartRateText.value = bpm.toInt().toString()
+                }
+            }
+        }
     }
 
     // ★追加:SensorEventListenerを実装したことで必須になるメソッド②
@@ -326,18 +545,34 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     }
 
     // ⑨ 権限が既に許可されているかどうかを確認する関数
-    private fun checkLocationPermission() {
-        val permissionGranted = ContextCompat.checkSelfPermission(
-            this,
-            Manifest.permission.ACCESS_FINE_LOCATION
+// ★変更:関数名も内容に合わせて変更(位置情報だけでなく複数権限をまとめてチェックするため)
+    private fun checkAndRequestPermissions() {
+        val locationGranted = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.ACCESS_FINE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
 
-        if (permissionGranted) {
-            // 既に許可済みなら、そのまま位置情報取得を開始
+        val activityRecognitionGranted = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.ACTIVITY_RECOGNITION
+        ) == PackageManager.PERMISSION_GRANTED
+
+        val bodySensorsGranted = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.BODY_SENSORS
+        ) == PackageManager.PERMISSION_GRANTED
+
+        // ★追加:まだ許可されていない権限だけをリストアップする
+        val permissionsToRequest = mutableListOf<String>()
+        if (!locationGranted) permissionsToRequest.add(Manifest.permission.ACCESS_FINE_LOCATION)
+        if (!activityRecognitionGranted) permissionsToRequest.add(Manifest.permission.ACTIVITY_RECOGNITION)
+        if (!bodySensorsGranted) permissionsToRequest.add(Manifest.permission.BODY_SENSORS)
+
+        if (permissionsToRequest.isEmpty()) {
+            // すべて許可済みの場合、そのまま各機能を開始する
             startLocationUpdates()
+            registerStepCounterSensor()
+            registerHeartRateSensor()
         } else {
-            // 未許可ならユーザーに許可ダイアログを表示する
-            requestPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+            // 未許可のものだけ、まとめてダイアログでリクエストする
+            requestPermissionLauncher.launch(permissionsToRequest.toTypedArray())
         }
     }
 

@@ -36,6 +36,7 @@ android {
 }
 
 dependencies {
+    implementation("androidx.health:health-services-client:1.1.0-rc02")
     implementation(platform(libs.compose.bom))
     implementation(libs.activity.compose)
     implementation(libs.compose.foundation)

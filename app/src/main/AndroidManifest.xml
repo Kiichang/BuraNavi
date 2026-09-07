@@ -14,6 +14,11 @@
     <!-- ★追加:端末を振動させるための権限 -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- ★追加:歩数センサーを使うための権限(Android 10以降で必須) -->
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+    <!-- ★追加:心拍センサーを使うための権限 -->
+    <uses-permission android:name="android.permission.BODY_SENSORS" />
+
     <!-- ★application タグは1個だけにする -->
     <application
         android:allowBackup="true"
