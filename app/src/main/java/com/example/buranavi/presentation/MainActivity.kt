@@ -10,7 +10,17 @@ import android.hardware.SensorEventListener // ★追加:センサーの値変�
 import android.hardware.SensorManager // ★追加:各種センサーを管理・取得するためのシステムサービス
 import android.location.Location // ★追加:目的地との計算にLocationクラスを直接使うため
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
+// ★追加: Health Services
+import androidx.health.services.client.HealthServices
+import androidx.health.services.client.PassiveListenerCallback
+import androidx.health.services.client.getCapabilities
+import androidx.health.services.client.data.DataPointContainer
+import androidx.health.services.client.data.DataType
+import androidx.health.services.client.data.PassiveListenerConfig
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas // ★追加:矢印を自分で描画するためのCompose部品
@@ -91,7 +101,7 @@ private val batteryReceiver = object : BroadcastReceiver() {
 class MainActivity : ComponentActivity(), SensorEventListener {
 
     // ★追加:歩数・心拍数を保持するセンサー変数
-    private var stepCounterSensor: Sensor? = null
+    // private var stepCounterSensor: Sensor? = null
     private var heartRateSensor: Sensor? = null
 
     // ★追加:画面表示用の状態(取得できるまでは "-" と表示しておく)
@@ -100,13 +110,88 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     // ★追加:歩数センサーは「起動からの累計歩数」を返す仕様のため、
     //    アプリを開いた時点の歩数を基準値として記録しておき、そこからの増分を「今回の歩数」として表示する
-    private var stepCounterBaseline: Float? = null
+    // ★変更:1日の歩数に変更のため削除
+    // private var stepCounterBaseline: Float? = null
 
     // ★追加:歩数センサーを取得して登録する関数
-    private fun registerStepCounterSensor() {
-        stepCounterSensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
-        stepCounterSensor?.also { sensor ->
-            sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL)
+    // ★変更:1日の歩数に変更のため削除
+//    private fun registerStepCounterSensor() {
+//        stepCounterSensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
+//        stepCounterSensor?.also { sensor ->
+//            sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL)
+//        }
+//    }
+
+    // ★Health Services
+    private val passiveMonitoringClient by lazy {
+        HealthServices.getClient(this).passiveMonitoringClient
+    }
+    private val passiveListenerCallback =
+        object : PassiveListenerCallback {
+            override fun onNewDataPointsReceived(
+                dataPoints: DataPointContainer
+            ) {
+                val dailySteps =
+                    dataPoints
+                        .getData(DataType.STEPS_DAILY)
+                        .lastOrNull()
+                        ?.value
+                if (dailySteps != null) {
+                    stepsText.value = dailySteps.toString()
+                }
+            }
+            override fun onRegistrationFailed(
+                throwable: Throwable
+            ) {
+                Log.e(
+                    "HealthServices",
+                    "歩数取得の登録に失敗",
+                    throwable
+                )
+                stepsText.value = "-"
+            }
+        }
+
+    private fun registerDailySteps() {
+        lifecycleScope.launch {
+            try {
+                val capabilities =
+                    passiveMonitoringClient.getCapabilities()
+
+                if (
+                    DataType.STEPS_DAILY !in
+                    capabilities.supportedDataTypesPassiveMonitoring
+                ) {
+                    Log.e(
+                        "HealthServices",
+                        "STEPS_DAILYはこの端末でサポートされていません"
+                    )
+
+                    stepsText.value = "-"
+                    return@launch
+                }
+
+                val config =
+                    PassiveListenerConfig.builder()
+                        .setDataTypes(
+                            setOf(DataType.STEPS_DAILY)
+                        )
+                        .build()
+
+                passiveMonitoringClient.setPassiveListenerCallback(
+                    config,
+                    passiveListenerCallback
+                )
+
+            } catch (e: Exception) {
+                Log.e(
+                    "HealthServices",
+                    "日次歩数の登録に失敗",
+                    e
+                )
+
+                stepsText.value = "-"
+            }
         }
     }
 
@@ -147,7 +232,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             val bodySensorsGranted = permissions[Manifest.permission.BODY_SENSORS] ?: false
 
             if (activityRecognitionGranted) {
-                registerStepCounterSensor()
+                registerDailySteps()
             }
             if (bodySensorsGranted) {
                 registerHeartRateSensor()
@@ -305,6 +390,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                 .padding(top = 10.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
+                            // 時刻は距離の上へ移動
                             if (appSettings.showTime) {
                                 Text(
                                     text = currentTimeText,
@@ -372,12 +458,6 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             // ★追加:設定でONになっている項目だけを表示する
-                            // if (appSettings.showTime) {
-                            //     Text(text = currentTimeText, color = Color.White, fontSize = 12.sp)
-                            // }
-                            // if (appSettings.showBattery) {
-                            //     Text(text = "バッテリー: ${batteryLevelText.value}", color = Color.White, fontSize = 12.sp)
-                            // }
                             if (appSettings.showBattery) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically
@@ -420,9 +500,6 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                     Spacer(modifier = Modifier.width(10.dp))
                                 }
                             }
-                            // if (appSettings.showSteps) {
-                            //     Text(text = "歩数: ${stepsText.value}", color = Color.White, fontSize = 12.sp)
-                            // }
                             if (appSettings.showHeartRate) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically
@@ -443,9 +520,6 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                     )
                                 }
                             }
-                            // if (appSettings.showHeartRate) {
-                            //     Text(text = "心拍: ${heartRateText.value} bpm", color = Color.White, fontSize = 12.sp)
-                            // }
                         }
                     }
                 }
@@ -466,9 +540,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_UI)
         }
         // ★追加:既に許可されている場合のみ、歩数・心拍センサーも再登録する
-        stepCounterSensor?.also { sensor ->
-            sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL)
-        }
+        // stepCounterSensor?.also { sensor ->
+        //     sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL)
+        // }
         heartRateSensor?.also { sensor ->
             sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL)
         }
@@ -513,18 +587,18 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             currentAzimuth = (azimuthInDegrees + 360) % 360
         }
             // ★追加:歩数センサーの処理
-            Sensor.TYPE_STEP_COUNTER -> {
-                val totalStepsSinceBoot = event.values[0]
-
-                // まだ基準値を記録していなければ、今回の値を基準として保存する
-                if (stepCounterBaseline == null) {
-                    stepCounterBaseline = totalStepsSinceBoot
-                }
-
-                // 基準値からの増分を「今回の歩数」として計算する
-                val stepsThisSession = (totalStepsSinceBoot - (stepCounterBaseline ?: totalStepsSinceBoot)).toInt()
-                stepsText.value = stepsThisSession.toString()
-            }
+//            Sensor.TYPE_STEP_COUNTER -> {
+//                val totalStepsSinceBoot = event.values[0]
+//
+//                // まだ基準値を記録していなければ、今回の値を基準として保存する
+//                if (stepCounterBaseline == null) {
+//                    stepCounterBaseline = totalStepsSinceBoot
+//                }
+//
+//                // 基準値からの増分を「今回の歩数」として計算する
+//                val stepsThisSession = (totalStepsSinceBoot - (stepCounterBaseline ?: totalStepsSinceBoot)).toInt()
+//                stepsText.value = stepsThisSession.toString()
+//            }
 
             // ★追加:心拍センサーの処理
             Sensor.TYPE_HEART_RATE -> {
@@ -568,7 +642,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         if (permissionsToRequest.isEmpty()) {
             // すべて許可済みの場合、そのまま各機能を開始する
             startLocationUpdates()
-            registerStepCounterSensor()
+            registerDailySteps()
             registerHeartRateSensor()
         } else {
             // 未許可のものだけ、まとめてダイアログでリクエストする

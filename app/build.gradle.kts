@@ -36,7 +36,6 @@ android {
 }
 
 dependencies {
-    implementation("androidx.health:health-services-client:1.1.0-rc02")
     implementation(platform(libs.compose.bom))
     implementation(libs.activity.compose)
     implementation(libs.compose.foundation)
@@ -62,4 +61,6 @@ dependencies {
     implementation("androidx.datastore:datastore-preferences:1.1.1")
     // ★追加:歯車アイコンなど、Material Designの標準アイコンを使うためのライブラリ
     implementation("androidx.compose.material:material-icons-core:1.6.8")
+    // ★追加
+    implementation("androidx.health:health-services-client:1.1.0-rc02")
 }
