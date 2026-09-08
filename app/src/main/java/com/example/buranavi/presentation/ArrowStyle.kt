@@ -134,3 +134,28 @@ fun DrawScope.drawArrowShape(style: ArrowStyle, color: Color) {
         }
     }
 }
+
+// ★追加:Ambient Mode用の、線だけで描くシンプルな矢印
+//    デザイン設定に関わらず、Ambient中は常にこの形状を使う(焼き付き防止・省電力のため)
+// ★変更:Ambient Mode用の矢印を、デフォルト矢印(TRIANGLE)と同じ輪郭のアウトラインに変更
+fun DrawScope.drawAmbientArrowShape(color: Color) {
+    // ★変更:TRIANGLEと全く同じ形の輪郭を使う
+    val path = Path().apply {
+        moveTo(size.width / 2, 0f)
+        lineTo(size.width * 0.75f, size.height)
+        lineTo(size.width / 2, size.height * 0.75f)
+        lineTo(size.width * 0.25f, size.height)
+        close()
+    }
+
+    // ★変更:drawPathのstyleにStrokeを指定することで、塗りつぶしではなく輪郭線だけを描く
+    drawPath(
+        path = path,
+        color = color,
+        style = Stroke(
+            width = 3f,
+            cap = StrokeCap.Round,
+            join = StrokeJoin.Round // 角の接続部分も丸くして、とがりすぎないようにする
+        )
+    )
+}

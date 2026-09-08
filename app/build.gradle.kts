@@ -63,4 +63,6 @@ dependencies {
     implementation("androidx.compose.material:material-icons-core:1.6.8")
     // ★追加
     implementation("androidx.health:health-services-client:1.1.0-rc02")
+    // ★追加:Ambient Mode対応のための、Google製の補助ライブラリ(Horologist)
+    implementation("com.google.android.horologist:horologist-compose-layout:0.7.14-beta")
 }

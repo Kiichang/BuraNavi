@@ -12,6 +12,7 @@ import android.location.Location // ★追加:目的地との計算にLocation�
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
+import com.google.android.horologist.compose.ambient.AmbientAware
 // ★追加: Health Services
 import androidx.health.services.client.HealthServices
 import androidx.health.services.client.PassiveListenerCallback
@@ -250,8 +251,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     // ★変更:bearingTextは矢印の角度計算に使うので、Float型の状態として持っておく
     //    (画面表示用の文字列は別途Text側で丸めて使う)
-    private var targetBearing by mutableStateOf(0f) // 目的地への方位角(真北基準)
-    private var currentAzimuth by mutableStateOf(0f) // ウォッチ自身が向いている方位角(真北基準)
+    private var targetBearing by mutableFloatStateOf(0f) // 目的地への方位角(真北基準)
+    private var currentAzimuth by mutableFloatStateOf(0f) // ウォッチ自身が向いている方位角(真北基準)
 
     // ★追加:目的地の緯度・経度(今は固定値でテスト。例として東京タワーの座標を設定)
     //    実際に使う際は、自分が試したい場所の緯度経度に書き換えて試してください
@@ -275,7 +276,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         // ★追加:一定時間操作がなくても、画面が消えたりウォッチフェイスに戻ったりしないようにする
         //    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON:
         //    「このActivityが表示されている間は、システムの自動スリープを無視して画面を点けたままにする」という指定
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         // ⑥ 位置情報クライアントを初期化(このActivityに紐付ける)
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
@@ -327,197 +328,225 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 .collectAsState(initial = AppSettings.DEFAULT)
 
             MaterialTheme {
-                // ★追加:showSettingsScreenの値によって、表示する画面を丸ごと切り替える
-                if (showSettingsScreen) {
-                    // ★追加:設定画面(中身は次のステップで作り込みます。今は仮の内容)
-                    SettingsScreen(
-                        currentSettings = appSettings, // ★追加:現在の設定値を渡す
-                        onBack = {
-                            // 「戻る」が押されたら、メイン画面表示に戻す
-                            showSettingsScreen = false
+                // ★追加:AmbientAwareでラップすることで、Ambient状態の変化を検知できるようになる
+                //    isAlwaysOnScreen = true:常時表示(Always-On)を有効にする指定
+                AmbientAware { ambientStateUpdate ->
+                    // ★追加:今、Ambient状態(簡易表示)かどうかを取り出す
+                    val isAmbient = ambientStateUpdate.isAmbient
+                    // ★追加:showSettingsScreenの値によって、表示する画面を丸ごと切り替える
+                    if (showSettingsScreen) {
+                        // ★追加:設定画面(中身は次のステップで作り込みます。今は仮の内容)
+                        SettingsScreen(
+                            currentSettings = appSettings, // ★追加:現在の設定値を渡す
+                            onBack = {
+                                // 「戻る」が押されたら、メイン画面表示に戻す
+                                showSettingsScreen = false
+                            }
+                        )
+                    } else {
+                        // ★追加:歯車アイコンをタップから3秒後に自動的に隠す処理
+                        //    LaunchedEffect(showGearIcon): showGearIconの値が変わるたびに、この中の処理が実行される
+                        LaunchedEffect(showGearIcon) {
+                            if (showGearIcon) {
+                                delay(3000) // 3秒待つ
+                                showGearIcon = false // 3秒経ったら非表示に戻す
+                            }
                         }
-                    )
-                } else {
-                    // ★追加:歯車アイコンをタップから3秒後に自動的に隠す処理
-                    //    LaunchedEffect(showGearIcon): showGearIconの値が変わるたびに、この中の処理が実行される
-                    LaunchedEffect(showGearIcon) {
-                        if (showGearIcon) {
-                            delay(3000) // 3秒待つ
-                            showGearIcon = false // 3秒経ったら非表示に戻す
-                        }
-                    }
-                    // ★変更:ColumnからBoxに変更。Box内の要素は「重ねて」配置でき、
-                    //    それぞれ個別に画面上の位置(上下左右)を指定できる
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            // ★変更:固定のColor.Blackから、設定値の色を反映するように変更
-                            .background(Color(appSettings.backgroundColor))
-                            // ★追加:画面のどこかをタップしたことを検知する仕組み
-                            .pointerInput(Unit) {
-                                detectTapGestures(
-                                    onTap = {
-                                        // タップされたら歯車アイコンを表示状態にする
-                                        showGearIcon = true
+                        // ★変更:ColumnからBoxに変更。Box内の要素は「重ねて」配置でき、
+                        //    それぞれ個別に画面上の位置(上下左右)を指定できる
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                // ★変更:固定のColor.Blackから、設定値の色を反映するように変更
+                                // ★変更:Ambient中は常に黒背景にする(設定色を無視。焼き付き・省電力のため)
+                                .background(if (isAmbient) Color.Black else Color(appSettings.backgroundColor))
+                                // ★追加:画面のどこかをタップしたことを検知する仕組み
+                                // ★変更:Ambient中はタップ検知を無効にする(どのみち反応しないため)
+                                .let { modifier ->
+                                    if (isAmbient) modifier else modifier.pointerInput(Unit) {
+                                        detectTapGestures(onTap = { showGearIcon = true })
                                     }
-                                )
-                            }
-                    ) {
-                        // ★変更:矢印を画面のちょうど中央に固定配置
-                        //    Modifier.align(Alignment.Center):この要素だけを親(Box)の中央に置く指定
-                        Canvas(
-                            modifier = Modifier
-                                .size(80.dp)
-                                .align(Alignment.Center)
-                        ) {
-                            val arrowRotation = targetBearing - currentAzimuth
-                            rotate(degrees = arrowRotation) {
-                                // ★変更:直接Pathを書いていた部分を、drawArrowShape関数の呼び出しに置き換え
-                                //    ArrayStyle.values()[インデックス] で、保存されている番号からenumを取り出す
-                                drawArrowShape(
-                                    style = ArrowStyle.values()[appSettings.arrowStyle],
-                                    color = Color(appSettings.arrowColor)
-                                )
-                            }
-                        }
-
-                        // ★変更:距離表示は、矢印より少し上側に固定配置
-                        //    Alignment.TopCenter:上部中央に配置
-                        //    padding(top = ...)で、矢印と重ならないよう少し下げて調整
-                        Column(
-                            modifier = Modifier
-                                .align(Alignment.TopCenter)
-                                .padding(top = 10.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            // 時刻は距離の上へ移動
-                            if (appSettings.showTime) {
-                                Text(
-                                    text = currentTimeText,
-                                    color = Color.White,
-                                    fontSize = 14.sp
-                                )
-                            }
-                            if (currentDestination == null) {
-                                Text(text = "目的地未設定", color = Color.Yellow)
-                            } else {
-                                // ★変更:数値と単位を横並びにするため、Rowで囲む
-                                Row(
-                                    // ★重要:文字サイズが違う要素を横に並べる際、下端を揃えることで見た目が綺麗になる
-                                    verticalAlignment = Alignment.Bottom
-                                ) {
-                                    Text(
-                                        text = "${distanceText.value}",
-                                        color = Color.White,
-                                        fontSize = 24.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    // ★追加:数値と単位の間に少しだけ隙間を空ける
-                                    Spacer(modifier = Modifier.width(1.dp))
-                                    Text(
-                                        text = "m",
-                                        color = Color.White,
-                                        fontSize = 16.sp,
-                                        // ★追加:単位の文字が数値の下端よりさらに沈んで見えるのを防ぐための微調整
-                                        modifier = Modifier.padding(bottom = 2.dp)
-                                    )
                                 }
-                            }
-                        }
-
-                        // ★追加:歯車アイコン本体。showGearIconがtrueの間だけ表示される
-                        // ★変更:if文で直接出し分けていた部分を、AnimatedVisibilityに置き換える
-                        AnimatedVisibility(
-                            visible = showGearIcon,
-                            // ★追加:表示されるときのアニメーション(フェードイン、即時表示)
-                            enter = fadeIn(animationSpec = tween(durationMillis = 0)),
-                            // ★追加:消えるときのアニメーション(フェードアウト、0.5秒かけてゆっくり消える)
-                            exit = fadeOut(animationSpec = tween(durationMillis = 500)),
-                            modifier = Modifier.align(Alignment.CenterEnd) // アイコンの位置
                         ) {
-                            IconButton(
-                                onClick = {
-                                    // アイコンがタップされたら設定画面へ切り替える
-                                    showSettingsScreen = true
-                                },
-                                modifier = Modifier.padding(4.dp)
+                            // ★変更:矢印を画面のちょうど中央に固定配置
+                            //    Modifier.align(Alignment.Center):この要素だけを親(Box)の中央に置く指定
+                            Canvas(
+                                modifier = Modifier
+                                    .size(80.dp)
+                                    .align(Alignment.Center)
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.Settings,
-                                    contentDescription = "設定",
-                                    tint = Color.White
-                                )
-                            }
-                        }
-
-                        // ★追加:時刻・バッテリー・歩数・心拍数を、画面下部にまとめて表示する
-                        Row(
-                            modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .padding(bottom = 30.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            // ★追加:設定でONになっている項目だけを表示する
-                            if (appSettings.showBattery) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        painter = painterResource(id = R.drawable.battery),
-                                        contentDescription = "バッテリー",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-
-                                    Spacer(modifier = Modifier.width(0.dp))
-
-                                    Text(
-                                        text = batteryLevelText.value,
-                                        color = Color.White,
-                                        fontSize = 12.sp
-                                    )
-                                    Spacer(modifier = Modifier.width(10.dp))
+                                val arrowRotation = targetBearing - currentAzimuth
+                                rotate(degrees = arrowRotation) {
+                                    // ★変更:Ambient中は専用のシンプルな矢印(白の線)、通常時は今まで通りの設定を反映
+                                    if (isAmbient) {
+                                        drawAmbientArrowShape(color = Color.White)
+                                    } else {
+                                        drawArrowShape(
+                                            style = ArrowStyle.values()[appSettings.arrowStyle],
+                                            color = Color(appSettings.arrowColor)
+                                        )
+                                    }
                                 }
                             }
-                            if (appSettings.showSteps) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        painter = painterResource(id = R.drawable.footsteps),
-                                        contentDescription = "歩数",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(16.dp)
-                                    )
 
-                                    Spacer(modifier = Modifier.width(2.dp))
-
+                            // ★変更:距離表示は、矢印より少し上側に固定配置
+                            //    Alignment.TopCenter:上部中央に配置
+                            //    padding(top = ...)で、矢印と重ならないよう少し下げて調整
+                            Column(
+                                modifier = Modifier
+                                    .align(Alignment.TopCenter)
+                                    .padding(top = 10.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                // 時刻は距離の上へ移動
+                                if (appSettings.showTime) {
                                     Text(
-                                        text = stepsText.value,
+                                        text = currentTimeText,
                                         color = Color.White,
-                                        fontSize = 12.sp
+                                        fontSize = 14.sp
                                     )
-                                    Spacer(modifier = Modifier.width(10.dp))
+                                }
+                                if (currentDestination == null) {
+                                    Text(text = "目的地未設定", color = Color.Yellow)
+                                } else {
+                                    // ★変更:数値と単位を横並びにするため、Rowで囲む
+                                    Row(
+                                        // ★重要:文字サイズが違う要素を横に並べる際、下端を揃えることで見た目が綺麗になる
+                                        verticalAlignment = Alignment.Bottom
+                                    ) {
+                                        Text(
+                                            text = distanceText.value,
+                                            color = Color.White,
+                                            fontSize = 24.sp,
+                                            // ★変更:Ambient中は太字を解除(塗りの多い文字は焼き付きリスクが上がるため)
+                                            fontWeight = if (isAmbient) FontWeight.Normal else FontWeight.Bold
+                                        )
+                                        // ★追加:数値と単位の間に少しだけ隙間を空ける
+                                        Spacer(modifier = Modifier.width(1.dp))
+                                        Text(
+                                            text = "m",
+                                            color = Color.White,
+                                            fontSize = 16.sp,
+                                            // ★追加:単位の文字が数値の下端よりさらに沈んで見えるのを防ぐための微調整
+                                            modifier = Modifier.padding(bottom = 2.dp)
+                                        )
+                                    }
                                 }
                             }
-                            if (appSettings.showHeartRate) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically
+
+                            // ★追加:歯車アイコン本体。showGearIconがtrueの間だけ表示される
+                            // ★変更:if文で直接出し分けていた部分を、AnimatedVisibilityに置き換える
+                            // ★変更:Ambient中は歯車アイコンを完全に非表示にする
+                            if (!isAmbient) {
+                                AnimatedVisibility(
+                                    visible = showGearIcon,
+                                    // ★追加:表示されるときのアニメーション(フェードイン、即時表示)
+                                    enter = fadeIn(animationSpec = tween(durationMillis = 0)),
+                                    // ★追加:消えるときのアニメーション(フェードアウト、0.5秒かけてゆっくり消える)
+                                    exit = fadeOut(animationSpec = tween(durationMillis = 500)),
+                                    modifier = Modifier.align(Alignment.CenterEnd) // アイコンの位置
                                 ) {
-                                    Icon(
-                                        painter = painterResource(id = R.drawable.heart),
-                                        contentDescription = "心拍",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(16.dp)
-                                    )
+                                    IconButton(
+                                        onClick = {
+                                            // アイコンがタップされたら設定画面へ切り替える
+                                            showSettingsScreen = true
+                                        },
+                                        modifier = Modifier.padding(4.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Settings,
+                                            contentDescription = "設定",
+                                            tint = Color.White
+                                        )
+                                    }
+                                }
+                            }
 
-                                    Spacer(modifier = Modifier.width(2.dp))
-
-                                    Text(
-                                        text = heartRateText.value,
-                                        color = Color.White,
-                                        fontSize = 12.sp
-                                    )
+                            // ★追加:時刻・バッテリー・歩数・心拍数を、画面下部にまとめて表示する
+                            // ★変更:Ambient中はアイコン付きの行を簡略化(アイコン画像を消して文字だけにする)
+                            //    アイコン画像は塗りつぶし面積が大きくなりがちなため、Ambient中は避けるのが無難
+                            Row(
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .padding(bottom = 30.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                // ★追加:設定でONになっている項目だけを表示する
+                                if (appSettings.showBattery) {
+                                    if (isAmbient) {
+                                        Text(
+                                            text = batteryLevelText.value,
+                                            color = Color.White,
+                                            fontSize = 12.sp
+                                        )
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                    } else {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(
+                                                painter = painterResource(id = R.drawable.battery),
+                                                contentDescription = "バッテリー",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(0.dp))
+                                            Text(
+                                                text = batteryLevelText.value,
+                                                color = Color.White,
+                                                fontSize = 12.sp
+                                            )
+                                            Spacer(modifier = Modifier.width(10.dp))
+                                        }
+                                    }
+                                }
+                                if (appSettings.showSteps) {
+                                    if (isAmbient) {
+                                        Text(
+                                            text = stepsText.value,
+                                            color = Color.White,
+                                            fontSize = 12.sp
+                                        )
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                    } else {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(
+                                                painter = painterResource(id = R.drawable.footsteps),
+                                                contentDescription = "歩数",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(2.dp))
+                                            Text(
+                                                text = stepsText.value,
+                                                color = Color.White,
+                                                fontSize = 12.sp
+                                            )
+                                            Spacer(modifier = Modifier.width(10.dp))
+                                        }
+                                    }
+                                }
+                                if (appSettings.showHeartRate) {
+                                    if (isAmbient) {
+                                        Text(
+                                            text = heartRateText.value,
+                                            color = Color.White,
+                                            fontSize = 12.sp
+                                        )
+                                    } else {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(
+                                                painter = painterResource(id = R.drawable.heart),
+                                                contentDescription = "心拍",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(2.dp))
+                                            Text(
+                                                text = heartRateText.value,
+                                                color = Color.White,
+                                                fontSize = 12.sp
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
