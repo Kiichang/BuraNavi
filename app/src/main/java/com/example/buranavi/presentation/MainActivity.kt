@@ -76,6 +76,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import android.content.Context
+import androidx.compose.foundation.layout.Arrangement
 import com.example.buranavi.R
 import androidx.compose.ui.res.painterResource
 
@@ -327,6 +328,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             val appSettings by observeAppSettings(applicationContext)
                 .collectAsState(initial = AppSettings.DEFAULT)
 
+            // ★追加:実際に使う文字色を計算する
+            //    syncTextColorWithArrowがONなら矢印色、OFFなら選択された文字色を使う
+            val effectiveTextColor = if (appSettings.syncTextColorWithArrow) {
+                appSettings.arrowColor
+            } else {
+                appSettings.textColor
+            }
+
             MaterialTheme {
                 // ★追加:AmbientAwareでラップすることで、Ambient状態の変化を検知できるようになる
                 //    isAlwaysOnScreen = true:常時表示(Always-On)を有効にする指定
@@ -402,7 +411,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                 if (appSettings.showTime) {
                                     Text(
                                         text = currentTimeText,
-                                        color = Color.White,
+                                        // ★変更:Ambient中はColor.White固定、通常時は設定色を反映
+                                        color = if (isAmbient) Color.White else Color(effectiveTextColor),
                                         fontSize = 14.sp
                                     )
                                 }
@@ -416,7 +426,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                     ) {
                                         Text(
                                             text = distanceText.value,
-                                            color = Color.White,
+                                            // ★変更
+                                            color = if (isAmbient) Color.White else Color(effectiveTextColor),
                                             fontSize = 24.sp,
                                             // ★変更:Ambient中は太字を解除(塗りの多い文字は焼き付きリスクが上がるため)
                                             fontWeight = if (isAmbient) FontWeight.Normal else FontWeight.Bold
@@ -425,7 +436,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                         Spacer(modifier = Modifier.width(1.dp))
                                         Text(
                                             text = "m",
-                                            color = Color.White,
+                                            // ★変更
+                                            color = if (isAmbient) Color.White else Color(effectiveTextColor),
                                             fontSize = 16.sp,
                                             // ★追加:単位の文字が数値の下端よりさらに沈んで見えるのを防ぐための微調整
                                             modifier = Modifier.padding(bottom = 2.dp)
@@ -456,7 +468,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                         Icon(
                                             imageVector = Icons.Default.Settings,
                                             contentDescription = "設定",
-                                            tint = Color.White
+                                            tint = if (isAmbient) Color.White else Color(effectiveTextColor)
                                         )
                                     }
                                 }
@@ -469,7 +481,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                 modifier = Modifier
                                     .align(Alignment.BottomCenter)
                                     .padding(bottom = 30.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 // ★追加:設定でONになっている項目だけを表示する
                                 if (appSettings.showBattery) {
@@ -479,22 +492,22 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                             color = Color.White,
                                             fontSize = 12.sp
                                         )
-                                        Spacer(modifier = Modifier.width(10.dp))
+//                                        Spacer(modifier = Modifier.width(10.dp))
                                     } else {
                                         Row(verticalAlignment = Alignment.CenterVertically) {
                                             Icon(
                                                 painter = painterResource(id = R.drawable.battery),
                                                 contentDescription = "バッテリー",
-                                                tint = Color.White,
+                                                tint = if (isAmbient) Color.White else Color(effectiveTextColor),
                                                 modifier = Modifier.size(16.dp)
                                             )
                                             Spacer(modifier = Modifier.width(0.dp))
                                             Text(
                                                 text = batteryLevelText.value,
-                                                color = Color.White,
+                                                color = if (isAmbient) Color.White else Color(effectiveTextColor),
                                                 fontSize = 12.sp
                                             )
-                                            Spacer(modifier = Modifier.width(10.dp))
+//                                            Spacer(modifier = Modifier.width(10.dp))
                                         }
                                     }
                                 }
@@ -505,22 +518,22 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                             color = Color.White,
                                             fontSize = 12.sp
                                         )
-                                        Spacer(modifier = Modifier.width(10.dp))
+//                                        Spacer(modifier = Modifier.width(10.dp))
                                     } else {
                                         Row(verticalAlignment = Alignment.CenterVertically) {
                                             Icon(
                                                 painter = painterResource(id = R.drawable.footsteps),
                                                 contentDescription = "歩数",
-                                                tint = Color.White,
+                                                tint = if (isAmbient) Color.White else Color(effectiveTextColor),
                                                 modifier = Modifier.size(16.dp)
                                             )
                                             Spacer(modifier = Modifier.width(2.dp))
                                             Text(
                                                 text = stepsText.value,
-                                                color = Color.White,
+                                                color = if (isAmbient) Color.White else Color(effectiveTextColor),
                                                 fontSize = 12.sp
                                             )
-                                            Spacer(modifier = Modifier.width(10.dp))
+//                                            Spacer(modifier = Modifier.width(10.dp))
                                         }
                                     }
                                 }
@@ -529,20 +542,20 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                         Text(
                                             text = heartRateText.value,
                                             color = Color.White,
-                                            fontSize = 12.sp
+                                            fontSize = 12.sp,
                                         )
                                     } else {
                                         Row(verticalAlignment = Alignment.CenterVertically) {
                                             Icon(
                                                 painter = painterResource(id = R.drawable.heart),
                                                 contentDescription = "心拍",
-                                                tint = Color.White,
+                                                tint = if (isAmbient) Color.White else Color(effectiveTextColor),
                                                 modifier = Modifier.size(16.dp)
                                             )
                                             Spacer(modifier = Modifier.width(2.dp))
                                             Text(
                                                 text = heartRateText.value,
-                                                color = Color.White,
+                                                color = if (isAmbient) Color.White else Color(effectiveTextColor),
                                                 fontSize = 12.sp
                                             )
                                         }

@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -35,15 +36,25 @@ import kotlinx.coroutines.launch
 import androidx.wear.compose.material.ToggleChip
 import androidx.wear.compose.material.ToggleChipDefaults
 import androidx.wear.compose.material.Switch
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.rememberScrollState
 
 @Composable
 private fun ToggleRow(
     label: String,
     checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
+    onCheckedChange: (Boolean) -> Unit,
+    // ★追加:呼び出し側からmodifierを渡せるようにする
+    //    デフォルト値としてModifier(何も指定しない場合の標準値)を設定しておくことで、
+    //    modifierを指定しなかった場合も今まで通り動作する
+    modifier: Modifier = Modifier
 ) {
     // ToggleChip: Wear OS標準の「ラベル+スイッチ」がセットになったUI部品
     ToggleChip(
+        // ★追加:受け取ったmodifierをToggleChipに渡す
+        modifier = modifier,
         checked = checked,
         onCheckedChange = onCheckedChange,
         label = { Text(text = label) },
@@ -54,24 +65,86 @@ private fun ToggleRow(
     )
 }
 
-// ★追加:設定画面で選べる背景色の候補(黒に近い、目に優しい色を中心に用意)
+// ★追加:設定画面で選べる背景色の候補
 private val backgroundColorOptions = listOf(
-    0xFF000000L, // 黒
-    0xFF1A1A2E, // 濃紺
-    0xFF1B2A1B, // 濃い緑
-    0xFF2A1B1B, // 濃い赤茶
-    0xFF1A1A1A, // ダークグレー
-    0xFFFFFFFF  // 白(将来的に明るい背景も使えるように)
+    0xFF000000L,
+    0xFF021A27L,
+    0xFF111344L,
+    0xFF1F2A33L,
+    0xFF262626L,
+    0xFF2C3440L,
+    0xFF2E3B40L,
+    0xFF3E4A59L,
+    0xFF4A5954L,
+    0xFF556773L,
+    0xFF6B6258L,
+    0xFF8C7B77L,
+    0xFF9295A6L,
+    0xFFBAC2D9L,
+    0xFFD1E3E6L,
+    0xFFB4E1FFL,
+
+    0xFF40302AL,
+    0xFF593E3CL,
+    0xFF63524DL,
+    0xFF8C4F2BL,
+    0xFF8C715AL,
+    0xFF9C8D71L,
+    0xFFBF8069L,
+    0xFFD9A689L,
+    0xFFCCC0AAL,
+    0xFFD9D1C7L,
+    0xFFF2E4DCL,
+    0xFFF2CA80L,
+    0xFFF2E7C4L,
+
+    0xFF4C533EL,
+    0xFF868C56L,
+    0xFF678C56L,
+    0xFF5D735EL,
+    0xFF97A69CL,
+    0xFFA9BF9FL,
+    0xFFCCD9CFL,
+
+    0xFF5A3F46L,
+    0xFF52154EL,
+    0xFF593F55L,
+    0xFFA6808EL,
+    0xFFD9B4BBL,
+    0xFFF2C9D4L,
+    0xFFD9BAD1L,
+
+    0xFF51A696L,
+    0xFF038C8CL,
+    0xFF95BFBBL,
+    0xFFB4D9D5L,
+    0xFFF2DFEBL
 )
 
 // ★追加:矢印の色の候補(はっきり見えやすい色を中心に用意)
 private val arrowColorOptions = listOf(
-    0xFFFF0000L, // 赤
-    0xFFFF9800, // オレンジ
-    0xFFFFEB3B, // 黄色
-    0xFF00E5FF, // シアン(明るい水色)
-    0xFF00FF00, // 緑
-    0xFFFFFFFF  // 白
+    0xFFFFFFFFL, // White
+    0xFFF2F2F2L, // Soft White
+    0xFFFFE082L, // Soft Yellow
+    0xFFFFC857L, // Warm Amber
+    0xFFFF8A65L, // Soft Orange
+    0xFFFF6B6BL, // Coral Red
+    0xFFFF8FB3L, // Soft Pink
+    0xFFD9A7FFL, // Lavender
+    0xFF9FA8FFL, // Soft Indigo
+    0xFF64B5F6L, // Sky Blue
+    0xFF4DD0E1L, // Cyan
+    0xFF63D7C6L, // Mint
+    0xFF8BCB88L, // Soft Green
+    0xFFC5D86DL, // Yellow Green
+    0xFF4A5568L, // Slate
+    0xFF1A1A1AL  // Near Black
+)
+
+// ★追加:文字色の選択肢(白・黒の2択)
+private val textColorOptions = listOf(
+    0xFFFFFFFFL, // 白
+    0xFF292929  // 黒
 )
 
 @Composable
@@ -99,7 +172,7 @@ fun SettingsScreen(currentSettings: AppSettings, onBack: () -> Unit) {
                     Icon(
                         imageVector = Icons.Default.ArrowBack,
                         contentDescription = "戻る",
-                        tint = Color.White
+                        tint = Color.White,
                     )
                 }
             }
@@ -160,6 +233,37 @@ fun SettingsScreen(currentSettings: AppSettings, onBack: () -> Unit) {
                 )
             }
 
+            // ★追加:「文字色」セクション
+            item {
+                ListHeader {
+                    Text(text = "文字色")
+                }
+            }
+            // ★追加:「矢印色に合わせる」トグル
+            item {
+                ToggleRow(
+                    label = "矢印色に合わせる",
+                    checked = currentSettings.syncTextColorWithArrow,
+                    onCheckedChange = { newValue ->
+                        coroutineScope.launch {
+                            saveSyncTextColorWithArrow(context, newValue)
+                        }
+                    }
+                )
+                Spacer(modifier = Modifier.padding(30.dp))
+            }
+            item {
+                ColorSwatchRow(
+                    colorOptions = textColorOptions,
+                    selectedColor = currentSettings.textColor,
+                    onColorSelected = { selectedColor ->
+                        coroutineScope.launch {
+                            saveTextColor(context, selectedColor)
+                        }
+                    }
+                )
+            }
+
             // ★追加:「表示項目」セクション
             item {
                 ListHeader {
@@ -172,7 +276,8 @@ fun SettingsScreen(currentSettings: AppSettings, onBack: () -> Unit) {
                     checked = currentSettings.showTime,
                     onCheckedChange = { newValue ->
                         coroutineScope.launch { saveShowTime(context, newValue) }
-                    }
+                    },
+                    modifier = Modifier.width(140.dp)
                 )
             }
             item {
@@ -181,7 +286,8 @@ fun SettingsScreen(currentSettings: AppSettings, onBack: () -> Unit) {
                     checked = currentSettings.showBattery,
                     onCheckedChange = { newValue ->
                         coroutineScope.launch { saveShowBattery(context, newValue) }
-                    }
+                    },
+                    modifier = Modifier.width(140.dp)
                 )
             }
             item {
@@ -190,7 +296,8 @@ fun SettingsScreen(currentSettings: AppSettings, onBack: () -> Unit) {
                     checked = currentSettings.showSteps,
                     onCheckedChange = { newValue ->
                         coroutineScope.launch { saveShowSteps(context, newValue) }
-                    }
+                    },
+                    modifier = Modifier.width(140.dp)
                 )
             }
             item {
@@ -199,8 +306,21 @@ fun SettingsScreen(currentSettings: AppSettings, onBack: () -> Unit) {
                     checked = currentSettings.showHeartRate,
                     onCheckedChange = { newValue ->
                         coroutineScope.launch { saveShowHeartRate(context, newValue) }
-                    }
+                    },
+                    modifier = Modifier.width(140.dp)
                 )
+                Spacer(modifier = Modifier.padding(30.dp))
+            }
+
+            // ★追加:リストの一番下にも「戻るボタン」を配置
+            item {
+                IconButton(onClick = onBack) {
+                    Icon(
+                        imageVector = Icons.Default.ArrowBack,
+                        contentDescription = "戻る",
+                        tint = Color.White
+                    )
+                }
             }
         }
     }
@@ -216,8 +336,13 @@ private fun ColorSwatchRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            // ★追加:横方向にスクロールできるようにする
+            //    rememberScrollState():どこまでスクロールしたかを記憶しておく仕組み
+            .horizontalScroll(rememberScrollState())
             .padding(horizontal = 8.dp),
-        horizontalArrangement = Arrangement.SpaceEvenly
+        // ★変更:SpaceEvenly(画面幅に均等配置)だと、スクロール時にうまく機能しないため、
+        //    spacedBy(一定間隔で並べる)に変更する
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         for (colorValue in colorOptions) {
             val isSelected = colorValue == selectedColor
@@ -227,9 +352,11 @@ private fun ColorSwatchRow(
                     .clip(CircleShape) // 丸い形に切り抜く
                     .background(Color(colorValue))
                     // ★選択中の色にだけ、白い枠線をつけて分かりやすくする
+                    // ★変更:黒に近い色が背景に埋もれて見えなくなるのを防ぐため、
+                    //    未選択時も薄いグレーの枠を必ずつけるようにする
                     .border(
-                        width = if (isSelected) 2.dp else 0.dp,
-                        color = Color.White,
+                        width = if (isSelected) 2.dp else 1.dp,
+                        color = if (isSelected) Color.White else Color.Gray,
                         shape = CircleShape
                     )
                     .clickable { onColorSelected(colorValue) }
