@@ -46,3 +46,14 @@ fun observeDestination(context: Context): Flow<Pair<Double, Double>?> {
         }
     }
 }
+
+// ★追加:保存されている目的地を削除する関数
+suspend fun clearDestination(context: Context) {
+    context.dataStore.edit { preferences ->
+        // remove():指定したキーのデータを完全に削除する
+        //    削除後は、observeDestination側で「両方の値が無い」と判定され、
+        //    自動的に「目的地未設定」の状態に戻る
+        preferences.remove(DestinationKeys.LATITUDE)
+        preferences.remove(DestinationKeys.LONGITUDE)
+    }
+}

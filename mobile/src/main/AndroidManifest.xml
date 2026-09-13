@@ -4,6 +4,9 @@
     <!-- ★追加:短縮URLを展開するためにインターネット通信を行うので、ネット権限が必要 -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- ★追加:スマホ自体を振動させるための権限 -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"

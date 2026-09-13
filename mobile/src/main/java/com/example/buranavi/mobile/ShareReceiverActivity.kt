@@ -1,180 +1,354 @@
 package com.example.buranavi.mobile
-// ↑ 自分のパッケージ名に合わせてください
 
-// ★追加:クリップボード操作に必要なimport
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import com.google.android.gms.wearable.PutDataMapRequest
+import com.google.android.gms.wearable.Wearable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONArray // ★追加:Nominatimからの返答(JSON形式)を読み取るために必要
+import org.json.JSONArray
 import java.net.HttpURLConnection
 import java.net.URL
-import java.net.URLDecoder // ★追加:URLエンコードされた日本語を元の文字列に戻すために必要
-import java.net.URLEncoder // ★追加:検索キーワードをURLに埋め込める形式に変換するために必要
-// ★追加:Wearable Data Layer APIを使うために必要なimport
-import com.google.android.gms.wearable.Wearable
-// import com.google.android.gms.wearable.MessageClient
-// ★変更:MessageClientの代わりにDataClientを使う
-import com.google.android.gms.wearable.PutDataMapRequest
+import java.net.URLDecoder
+import java.net.URLEncoder
+// ★追加:タイムアウト機能を使うために必要
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import java.net.CookieManager
+import java.net.CookiePolicy
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
+import kotlinx.coroutines.async
+import kotlinx.coroutines.selects.select
+import kotlinx.coroutines.coroutineScope
 
-// ComponentActivity: 画面表示をほぼ行わない「裏方専用」のActivityとして使う
+private const val TAG = "BuraNaviShare" // ★追加:このファイル専用のログタグ
+
+// 座標の取得手段を表す区分
+enum class LocationSource {
+    WEB_VIEW,      // WebView経由
+    GEOCODING_API  // API経由
+}
+
 class ShareReceiverActivity : ComponentActivity() {
+
+    // ★追加:クラスが初めて使われるタイミングで1回だけ実行される初期化ブロック
+    companion object {
+        init {
+            // ★重要:CookieManagerをアプリ全体のデフォルトとして設定する
+            //    ACCEPT_ALL: サーバーから送られてきたCookieをすべて受け入れて保存する
+            //    これにより、HttpURLConnectionが自動的にCookieを保存・再送信するようになる
+            val cookieManager = CookieManager()
+            cookieManager.setCookiePolicy(CookiePolicy.ACCEPT_ALL)
+            java.net.CookieHandler.setDefault(cookieManager)
+        }
+    }
+
+    // ★追加:現在開いている通信を覚えておくための変数
+    //    @Volatile: 複数スレッドから読み書きされても、常に最新の値が見えるようにする指定
+    @Volatile
+    private var activeConnection: HttpURLConnection? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // ① このActivityを起動した「Intent(意図)」を取得する
-        //    Googleマップから共有された場合、この中に共有された文字列が入っている
         val receivedIntent = intent
 
-        // ② Intentのactionが本当に「共有(SEND)」かどうかを確認
+        // ★追加:受信したIntentの中身(action, type)をまず記録
+        Log.e(TAG, "onCreate開始 action=${receivedIntent?.action} type=${receivedIntent?.type}")
+
         if (receivedIntent?.action == Intent.ACTION_SEND && receivedIntent.type == "text/plain") {
-            // ③ 共有されたテキスト本体を取り出す
-            //    EXTRA_TEXTというキーに、共有元アプリが入れた文字列が格納されている
             val sharedText = receivedIntent.getStringExtra(Intent.EXTRA_TEXT)
 
+            // ★追加:共有された生テキストをそのままログに残す(ここが今回一番重要)
+            Log.e(TAG, "共有された生テキスト: $sharedText")
+
             if (sharedText != null) {
-                // ④ 座標を抜き出す処理を開始(ネット通信が絡むので後述の理由でコルーチンを使う)
                 extractCoordinatesAndProceed(sharedText)
             } else {
-                Toast.makeText(this, "共有データが空でした", Toast.LENGTH_SHORT).show()
-                finish() // このActivityを終了(画面を閉じる)
+                Log.e(TAG, "共有テキストがnullでした")
+                finish()
             }
         } else {
-            // 共有以外の方法で起動された場合(通常は起こらないが念のため)
-            Toast.makeText(this, "対応していない起動方法です", Toast.LENGTH_SHORT).show()
+            Log.e(TAG, "対応していないIntentでした")
             finish()
         }
     }
 
-    // ⑤ 共有されたテキストから緯度経度を抜き出すメイン処理
-    private fun extractCoordinatesAndProceed(sharedText: String) {
-        // CoroutineScope(Dispatchers.IO):
-        //   ネットワーク通信は「時間がかかる処理」なので、
-        //   画面を止めないよう別スレッド(IO用スレッド)で実行する仕組み
-        CoroutineScope(Dispatchers.IO).launch {
-            // まず、共有テキストの中から「URLらしき部分」を正規表現で抜き出す
-            // (Googleマップの共有テキストは「場所の名前 + URL」のような形式で来ることが多いため)
-            val urlRegex = Regex("https?://\\S+")
-            val matchedUrl = urlRegex.find(sharedText)?.value
+    // ★追加:失敗時にスマホ自体を振動させる
+    private fun vibrateOnFailure() {
+        val vibrator = getSystemService(VIBRATOR_SERVICE) as android.os.Vibrator
+        // 2回短く振動させることで「成功(1回)」と区別する
+        val pattern = longArrayOf(0, 150, 100, 150) // 待機, 振動, 待機, 振動
+        vibrator.vibrate(android.os.VibrationEffect.createWaveform(pattern, -1))
+    }
 
-            if (matchedUrl == null) {
-                // URLが含まれていなかった場合
-                withContext(Dispatchers.Main) {
-                    // ★デバッグ用:共有された生のテキストをそのまま表示してみる
-                    Toast.makeText(this@ShareReceiverActivity, "URL未検出。元テキスト: $sharedText", Toast.LENGTH_LONG).show()
-                    // Toast.makeText(this@ShareReceiverActivity, "URLが見つかりませんでした", Toast.LENGTH_SHORT).show()
-                    finish()
-                }
-                return@launch
-            }
+    // ★追加:WebViewを使って、JavaScriptによるURL書き換え後の「座標入りURL」を取得する関数
+    //    suspendCancellableCoroutine: コールバック形式のAPI(WebViewClient)を、
+    //    コルーチンのsuspend関数として扱えるように橋渡しする仕組み
+    // ★改善版: WebViewを使って座標を取得する関数
+    private suspend fun resolveViaWebView(url: String): Pair<Double, Double>? =
+        suspendCancellableCoroutine { continuation ->
+            val webView = WebView(this)
 
-            // ★デバッグ用:抜き出せたURLをまず表示(ここで一旦止めて確認したい場合はコメントアウトを外す)
-            // withContext(Dispatchers.Main) {
-            //     Toast.makeText(this@ShareReceiverActivity, "検出したURL: $matchedUrl", Toast.LENGTH_LONG).show()
-            // }
+            // ① User-AgentをPC版(Desktop)に偽装して、Googleマップにフル版のJSを実行させる
+            val desktopUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            webView.settings.userAgentString = desktopUserAgent
+            webView.settings.javaScriptEnabled = true
+            webView.settings.domStorageEnabled = true
 
-            // ⑥ URLが短縮URL(maps.app.goo.gl)かどうかで処理を分ける
-            // val finalUrl = if (matchedUrl.contains("maps.app.goo.gl") || matchedUrl.contains("goo.gl")) {
-            val finalUrl = if (matchedUrl.contains("goo.gl")) {
-                // 短縮URLの場合、実際にアクセスして「リダイレクト先」の本当のURLを取得する
-                resolveRedirectUrl(matchedUrl)
-            } else {
-                // 既に通常URLの場合はそのまま使う
-                matchedUrl
-            }
+            // ② 判定用正規表現を拡張（様々なGoogleマップの座標形式に対応）
+            // 1. @緯度,経度
+            val patternA = Regex("""@(-?\d+\.\d+),(-?\d+\.\d+)""")
+            // 2. !3d緯度!4d経度
+            val patternB = Regex("""!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)""")
+            // 3. search/緯度,+経度 または ll=緯度,経度 (モバイル特有の形式に対応)
+            val patternC = Regex("""(?:search/|ll=)(-?\d+\.\d+)(?:%2C|,\+|\+|,)(-?\d+\.\d+)""")
 
-            // 座標のパターンを2種類チェックするように変更
-            // パターンA: @35.6586,139.7454,17z のような形式
-            val patternA = Regex("@(-?\\d+\\.\\d+),(-?\\d+\\.\\d+)")
-            // パターンB: !3d35.658581!4d139.745438 のような形式(Googleマップの別の内部表現)
-            val patternB = Regex("!3d(-?\\d+\\.\\d+)!4d(-?\\d+\\.\\d+)")
+            var isResolved = false
+            val handler = android.os.Handler(mainLooper)
 
-            var latitude: Double? = null
-            var longitude: Double? = null
+            // 定期チェック処理
+            val checkRunnable = object : Runnable {
+                override fun run() {
+                    if (isResolved) return
+                    val currentUrl = webView.url
 
-            // ★デバッグ用:各段階の状況を溜めておく文字列
-            val debugLog = StringBuilder()
-            debugLog.appendLine("finalUrl: $finalUrl")
+                    if (currentUrl != null) {
+                        val match = patternA.find(currentUrl)
+                            ?: patternB.find(currentUrl)
+                            ?: patternC.find(currentUrl)
 
-            val matchResult = finalUrl?.let { patternA.find(it) ?: patternB.find(it) }
+                        if (match != null) {
+                            isResolved = true
+                            val lat = match.groupValues[1].toDoubleOrNull()
+                            val lng = match.groupValues[2].toDoubleOrNull()
 
-            if (matchResult != null) {
-                // 従来通り、URLに直接座標が入っていたケース
-                latitude = matchResult.groupValues[1].toDouble()
-                longitude = matchResult.groupValues[2].toDouble()
-                debugLog.appendLine("パターンA/Bで座標を直接検出")
-            } else {
-                // ★追加:座標が直接見つからなかった場合、住所・施設名を抜き出してジオコーディングを試みる
-                val placeName = extractPlaceName(finalUrl ?: "")
-                // ★デバッグ用:抜き出した住所名をログに残す
-                debugLog.appendLine("抜き出した住所名: $placeName")
+                            if (lat != null && lng != null) {
+                                Log.e(TAG, "WebView経由で座標検出成功: $lat, $lng (URL: $currentUrl)")
+                                cleanupWebView(webView)
+                                if (continuation.isActive) continuation.resume(Pair(lat, lng))
+                                return
+                            }
+                        }
+                    }
 
-                if (placeName != null) {
-                    val geocodedResult = geocodeAddress(placeName, debugLog) // ★debugLogを渡すように変更
-                    if (geocodedResult != null) {
-                        latitude = geocodedResult.first
-                        longitude = geocodedResult.second
+                    // まだ見つからなければ200ms後に再チェック
+                    if (!isResolved) {
+                        handler.postDelayed(this, 200)
                     }
                 }
             }
 
-            // ⑧ 結果をメインスレッドに戻して画面表示(Toastなど)を行う
-            withContext(Dispatchers.Main) {
-                if (latitude != null && longitude != null) {
-                    // Toast.makeText(
-                    //     this@ShareReceiverActivity,
-                    //     "座標を取得: $latitude, $longitude",
-                    //     Toast.LENGTH_LONG
-                    // ).show()
-
-                    // ★追加:座標が取得できたら、ウォッチへ送信する
-                    sendDestinationToWatch(latitude, longitude)
-                } else {
-                    // ★変更:finalUrlだけでなく、debugLog全体をクリップボードにコピーする
-                    copyToClipboard(debugLog.toString())
-                    Toast.makeText(
-                        this@ShareReceiverActivity,
-                        "抜き出し失敗(詳細をクリップボードにコピー済み)",
-                        Toast.LENGTH_LONG
-                    ).show()
+            webView.webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView?, finishedUrl: String?) {
+                    super.onPageFinished(view, finishedUrl)
+                    Log.e(TAG, "WebViewページ読込中: $finishedUrl")
+                    handler.post(checkRunnable)
                 }
-                finish()
+            }
+
+            // ③ タイムアウト時間を少し延長（PC版描画のJS完了を待つため 10秒に設定）
+            handler.postDelayed({
+                if (!isResolved) {
+                    isResolved = true
+                    Log.e(TAG, "WebView経由の解決がタイムアウト")
+                    cleanupWebView(webView)
+                    if (continuation.isActive) continuation.resume(null)
+                }
+            }, 10000L)
+
+            continuation.invokeOnCancellation {
+                handler.post { cleanupWebView(webView) }
+            }
+
+            webView.loadUrl(url)
+            handler.post(checkRunnable)
+        }
+
+    // クリーンアップ共通関数
+    private fun cleanupWebView(webView: WebView) {
+        try {
+            webView.stopLoading()
+            webView.loadUrl("about:blank")
+            webView.destroy()
+        } catch (e: Exception) {
+            Log.e(TAG, "WebView破棄時の例外: ${e.message}")
+        }
+    }
+
+    private fun extractCoordinatesAndProceed(sharedText: String) {
+        CoroutineScope(Dispatchers.IO).launch {
+            val watchdog = launch {
+                delay(16000L)
+                while (isActive) {
+                    activeConnection?.disconnect()
+                    delay(200L)
+                }
+            }
+
+            val result = try {
+                resolveCoordinatesFromText(sharedText)
+            } catch (e: Exception) {
+                Log.e(TAG, "強制切断または例外により中断: ${e.message}")
+                null
+            } finally {
+                watchdog.cancel()
+            }
+
+            if (result != null) {
+                val (coordinates, source) = result
+                val (lat, lng) = coordinates
+
+                // ★ここで「どちら経由で取得成功したか」をログ出力！
+                when (source) {
+                    LocationSource.WEB_VIEW -> {
+                        Log.e(TAG, "【成功】WebView経由で座標を取得しました: $lat, $lng")
+                    }
+                    LocationSource.GEOCODING_API -> {
+                        // 目的である「WebViewタイムアウト→API成功」のパターン
+                        Log.e(TAG, "【フォールバック成功】WebViewがタイムアウトしたため、Geocoding API経由で座標を取得しました: $lat, $lng")
+                    }
+                }
+
+                withContext(Dispatchers.Main) {
+                    sendDestinationToWatch(lat, lng)
+                }
+            } else {
+                Log.e(TAG, "【失敗】WebView・Geocoding APIのいずれでも座標を取得できませんでした")
+                withContext(Dispatchers.Main) {
+                    vibrateOnFailure()
+                }
+            }
+
+            withContext(Dispatchers.Main) { finish() }
+        }
+    }
+
+    // ★追加:今までextractCoordinatesAndProceedに書いていた抽出ロジックを、
+    //    戻り値を返す独立した関数として切り出したもの
+    // ★同時並行（レース）方式で最速取得する関数
+    private suspend fun resolveCoordinatesFromText(sharedText: String): Pair<Pair<Double, Double>, LocationSource>? {
+        val urlRegex = Regex("https?://\\S+")
+        val matchedUrl = urlRegex.find(sharedText)?.value ?: return null
+
+        return coroutineScope {
+            // ① Geocoding API 側の非同期タスクを開始
+            val apiDeferred = async(Dispatchers.IO) {
+                val placeName = if (matchedUrl.contains("goo.gl")) {
+                    val finalUrl = resolveRedirectUrl(matchedUrl)
+                    extractPlaceName(finalUrl ?: "")
+                } else {
+                    extractPlaceName(matchedUrl)
+                }
+
+                if (placeName != null) {
+                    geocodeAddress(placeName)
+                } else null
+            }
+
+            // ② WebView 側の非同期タスクを開始（UIスレッドで動かす）
+            val webViewDeferred = async(Dispatchers.Main) {
+                resolveViaWebView(matchedUrl)
+            }
+
+            // ③ 【重要】select を使って「先に成功した方」の結果を即座に採用！
+            val result = select<Pair<Pair<Double, Double>, LocationSource>?> {
+                // API 側が先に完了した場合
+                apiDeferred.onAwait { apiResult ->
+                    if (apiResult != null) {
+                        Log.e(TAG, "API 側が勝利！(最速完了)")
+                        webViewDeferred.cancel() // 遅れた WebView 側を即キャンセル
+                        Pair(apiResult, LocationSource.GEOCODING_API)
+                    } else null // APIが失敗した場合は採用せず、WebView側を待つ
+                }
+
+                // WebView 側が先に完了した場合
+                webViewDeferred.onAwait { webViewResult ->
+                    if (webViewResult != null) {
+                        Log.e(TAG, "WebView 側が勝利！")
+                        apiDeferred.cancel() // 遅れた API 側を即キャンセル
+                        Pair(webViewResult, LocationSource.WEB_VIEW)
+                    } else null // WebViewが失敗した場合は採用せず、API側を待つ
+                }
+            }
+
+            // もし片方が null（失敗）で select を抜けた場合、もう片方の完了を待つ
+            result ?: run {
+                val apiRes = apiDeferred.await()
+                if (apiRes != null) return@coroutineScope Pair(apiRes, LocationSource.GEOCODING_API)
+
+                val webViewRes = webViewDeferred.await()
+                if (webViewRes != null) return@coroutineScope Pair(webViewRes, LocationSource.WEB_VIEW)
+
+                null
             }
         }
     }
 
-    // ★追加:URLの中の「/place/」と「/data=」(または「/@」)の間から、施設名・住所を取り出す関数
+    private fun sendDestinationToWatch(latitude: Double, longitude: Double) {
+        val nodeClient = Wearable.getNodeClient(this)
+        val dataClient = Wearable.getDataClient(this)
+
+        nodeClient.connectedNodes.addOnSuccessListener { nodes ->
+            // ★追加:見つかったノードを記録
+            Log.e(TAG, "接続中ノード数: ${nodes.size}, ノード: ${nodes.joinToString { it.displayName }}")
+
+            if (nodes.isEmpty()) {
+                Log.e(TAG, "ノードが見つかりません")
+                return@addOnSuccessListener
+            }
+
+            val putDataMapRequest = PutDataMapRequest.create("/destination").apply {
+                dataMap.putDouble("latitude", latitude)
+                dataMap.putDouble("longitude", longitude)
+                dataMap.putLong("timestamp", System.currentTimeMillis())
+            }
+
+            val putDataRequest = putDataMapRequest.asPutDataRequest()
+            putDataRequest.setUrgent()
+
+            dataClient.putDataItem(putDataRequest)
+                .addOnSuccessListener {
+                    // ★追加:送信成功ログ
+                    Log.e(TAG, "DataItem送信成功")
+                }
+                .addOnFailureListener { exception ->
+                    // ★追加:送信失敗ログ(これが一番怪しい箇所)
+                    Log.e(TAG, "DataItem送信失敗: ${exception.message}", exception)
+                }
+        }.addOnFailureListener { exception ->
+            // ★追加:ノード取得自体の失敗ログ
+            Log.e(TAG, "ノード取得失敗: ${exception.message}", exception)
+        }
+    }
+
     private fun extractPlaceName(url: String): String? {
-        // 正規表現の意味:
-        //   "/place/" の直後から、次に "/data=" か "/@" が出てくる直前までの文字列を取得
         val placeNameRegex = Regex("/place/([^/]+)")
         val rawName = placeNameRegex.find(url)?.groupValues?.get(1) ?: return null
-
         return try {
-            // URLエンコードされている文字(%E3%80%92など)を、元の日本語に戻す
             URLDecoder.decode(rawName, "UTF-8")
         } catch (e: Exception) {
             null
         }
     }
 
-    // ★追加:全角文字を半角に変換する関数
     private fun normalizeFullwidth(input: String): String {
         val sb = StringBuilder()
         for (char in input) {
             val code = char.code
             when {
                 code in 0xFF10..0xFF19 -> sb.append((code - 0xFF10 + '0'.code).toChar())
-                // ★修正:「ー」(カタカナ長音記号 U+30FC)を対象から外した
-                //    全角ハイフン(－ U+FF0D、− U+2212)だけを半角に変換する
                 char == '－' || char == '−' -> sb.append('-')
                 else -> sb.append(char)
             }
@@ -182,215 +356,115 @@ class ShareReceiverActivity : ComponentActivity() {
         return sb.toString()
     }
 
-    // ★追加:住所文字列から郵便番号部分(〒から始まる部分)を取り除く関数
     private fun removePostalCode(address: String): String {
-        // 正規表現の意味:「〒」+ 数字3桁 + 「-」+ 数字4桁 + 空白、というパターンを削除
         return address.replace(Regex("〒\\d{3}-\\d{4}\\s*"), "")
     }
 
-    // ★変更:geocodeAddress関数の中身を、Nominatim呼び出しからGoogle Geocoding API呼び出しに置き換え
-    private fun geocodeAddress(address: String, debugLog: StringBuilder): Pair<Double, Double>? {
+    private fun geocodeAddress(address: String): Pair<Double, Double>? {
         val cleanedAddress = normalizeFullwidth(removePostalCode(address)).trim()
-        debugLog.appendLine("正規化後の住所: $cleanedAddress")
-
-        // ★変更:queryNominatim → queryGeocodingApi に置き換え
-        var result = queryGeocodingApi(cleanedAddress, debugLog)
-
+        var result = queryGeocodingApi(cleanedAddress)
         if (result == null) {
             val lastWord = cleanedAddress.split(" ", "　").lastOrNull()
             if (lastWord != null && lastWord != cleanedAddress) {
-                debugLog.appendLine("フォールバック検索キーワード: $lastWord")
-                result = queryGeocodingApi("$lastWord 東京", debugLog) // ★「日本」より「東京」の方が精度が上がりやすいため変更
+                result = queryGeocodingApi("$lastWord 東京")
             }
         }
-
         return result
     }
 
-    // ★変更:Nominatim用の関数を、Google Geocoding API用に置き換え
-    private fun queryGeocodingApi(query: String, debugLog: StringBuilder): Pair<Double, Double>? {
+    private fun queryGeocodingApi(query: String): Pair<Double, Double>? {
         return try {
             val encodedQuery = URLEncoder.encode(query, "UTF-8")
-            // language=ja: 結果を日本語で受け取る設定(必須ではないが、精度向上に役立つことがある)
-            // region=jp: 日本国内を優先して検索する設定
             val apiUrl = URL(
                 "https://maps.googleapis.com/maps/api/geocode/json" +
-                        "?address=$encodedQuery" +
-                        "&language=ja" +
-                        "&region=jp" +
-                        "&key=${BuildConfig.GEOCODING_API_KEY}" // ★local.propertiesから読み込んだキーを使用
+                        "?address=$encodedQuery&language=ja&region=jp&key=${BuildConfig.GEOCODING_API_KEY}"
             )
-
             val connection = apiUrl.openConnection() as HttpURLConnection
+            activeConnection = connection // ★追加
 
-            // ★重要:APIキーに「Androidアプリ制限」をかけている場合、この2つのヘッダーが必須
-            connection.setRequestProperty("X-Android-Package", "com.example.buranavi.mobile")
-            // ↓先ほど確認したSHA-1を、コロンを除去してすべて大文字にした文字列に置き換えてください
+            // ★追加:明示的なタイムアウト(これが無かったのが今回の主原因の1つ)
+            connection.connectTimeout = 4000
+            connection.readTimeout = 4000
+
+            connection.setRequestProperty("X-Android-Package", packageName)
             connection.setRequestProperty("X-Android-Cert", "FE54F26E6B03D1309B71075D6670167BE5841DA6")
-
             connection.connect()
 
-            val responseCode = connection.responseCode
             val responseText = connection.inputStream.bufferedReader().use { it.readText() }
             connection.disconnect()
 
-            debugLog.appendLine("Geocoding APIクエリ「$query」→ 応答コード: $responseCode / 内容: $responseText")
-
-            // Google Geocoding APIのレスポンス構造から、緯度経度を取り出す
-            // 構造: { "results": [ { "geometry": { "location": { "lat": ..., "lng": ... } } } ], "status": "OK" }
             val jsonObject = org.json.JSONObject(responseText)
-            val status = jsonObject.getString("status")
-
-            if (status == "OK") {
-                val results = jsonObject.getJSONArray("results")
-                val firstResult = results.getJSONObject(0)
-                val location = firstResult.getJSONObject("geometry").getJSONObject("location")
-                val lat = location.getDouble("lat")
-                val lng = location.getDouble("lng")
-                Pair(lat, lng)
+            if (jsonObject.getString("status") == "OK") {
+                val location = jsonObject.getJSONArray("results")
+                    .getJSONObject(0).getJSONObject("geometry").getJSONObject("location")
+                Pair(location.getDouble("lat"), location.getDouble("lng"))
             } else {
-                // OK以外(ZERO_RESULTS, REQUEST_DENIEDなど)の場合は見つからなかった扱いにする
-                debugLog.appendLine("ステータスがOKではありません: $status")
+                val status = jsonObject.optString("status")
+                val errorMessage =
+                    jsonObject.optString("error_message", "なし")
+                Log.e(TAG, "Geocoding API異常: status=$status, error=$errorMessage")
                 null
             }
         } catch (e: Exception) {
-            debugLog.appendLine("例外発生: ${e.javaClass.simpleName} - ${e.message}")
+            Log.e(TAG, "Geocoding API例外: ${e.message}", e)
             null
         }
     }
 
-    // ★変更:リトライ機能と、複数回のリダイレクトに対応したバージョン
+    // ★変更:試行回数を減らし(4→2)、待ち時間の上限も抑える
     private fun resolveRedirectUrl(shortUrl: String): String? {
-        // ★変更:試行回数を4回に増やし、失敗のたびに待ち時間を伸ばす(バックオフ)ようにした
-        repeat(4) { attempt ->
+        repeat(3) { attempt ->
             try {
                 var currentUrl = shortUrl
                 repeat(5) {
                     val url = URL(currentUrl)
                     val connection = url.openConnection() as HttpURLConnection
-
-                    connection.connectTimeout = 5000
-                    connection.readTimeout = 5000
+                    activeConnection = connection // ★追加:見張り役に「今これを見てね」と伝える
+                    // ★変更:5秒→3秒に短縮(遅い接続を早めに見切る)
+                    connection.connectTimeout = 3000
+                    connection.readTimeout = 3000
                     connection.instanceFollowRedirects = false
-                    // ★追加:デフォルトのUser-Agent(Java/…)だと、Google側が
-                    //    ブラウザではないアクセスとして通常と違う応答を返す可能性があるため、
-                    //    一般的なブラウザを装うUser-Agentを設定しておく
                     connection.setRequestProperty(
                         "User-Agent",
                         "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36"
                     )
                     connection.connect()
-
-                    val responseCode = connection.responseCode
                     val redirectUrl = connection.getHeaderField("Location")
                     connection.disconnect()
 
                     if (redirectUrl != null) {
-                        // リダイレクト先が見つかったので、そのURLで続行
+                        connection.disconnect()
                         currentUrl = redirectUrl
                     } else {
-                        // ★変更:Locationが無い場合、「本当に解決済みか」をチェックする
                         if (!currentUrl.contains("goo.gl")) {
-                            // goo.glドメインを抜け出せていれば、正常に最終URLへ到達したとみなす
+                            connection.disconnect()
                             return currentUrl
                         } else {
-                            // まだgoo.glドメインのまま = 反映待ちの可能性が高いので、失敗として例外を投げる
-                            throw IllegalStateException(
-                                "短縮URLがまだ解決できません(応答コード: $responseCode)"
-                            )
+                            // ★追加:リダイレクトではなかった場合、実際に何が返ってきたかを記録する
+                            val responseCode = connection.responseCode
+                            val bodySnippet = try {
+                                connection.inputStream.bufferedReader().use { it.readText().take(200) }
+                            } catch (e: Exception) {
+                                "(本文取得失敗: ${e.message})"
+                            }
+                            Log.e(TAG, "リダイレクトなし。応答コード: $responseCode, 本文冒頭: $bodySnippet")
+                            connection.disconnect()
+                            throw IllegalStateException("短縮URL未解決")
                         }
                     }
                 }
                 return currentUrl
             } catch (e: Exception) {
-                // ★変更:失敗のたびに待ち時間を伸ばす(1回目失敗→0.8秒待機、2回目失敗→1.6秒待機、3回目失敗→2.4秒待機)
-                if (attempt < 3) {
-                    Thread.sleep(800L * (attempt + 1))
-                }
+                Log.e(TAG, "リダイレクト解決失敗(試行${attempt + 1}回目): ${e.message}")
+                if (attempt < 2) Thread.sleep(500) // ★変更:attempt < 1 → attempt < 2
             }
         }
         return null
     }
 
-    // ★追加:文字列をクリップボードにコピーするための関数
     private fun copyToClipboard(text: String) {
-        // システムのクリップボード機能を管理するサービスを取得
         val clipboardManager = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-
-        // ClipData: クリップボードにコピーするデータそのもの
-        //   第1引数の"debug_url"はラベル(クリップボードの履歴などで表示される名前、任意の文字列でOK)
-        //   第2引数がコピーしたい実際の中身
         val clipData = ClipData.newPlainText("debug_url", text)
-
-        // 作成したデータをクリップボードにセット(コピー)する
         clipboardManager.setPrimaryClip(clipData)
-    }
-
-    // ★追加:緯度・経度をウォッチへ送信する関数
-    private fun sendDestinationToWatch(latitude: Double, longitude: Double) {
-        // NodeClient:ペアリングされているウォッチの情報を取得するためのクライアント
-        val nodeClient = Wearable.getNodeClient(this)
-        // MessageClient:実際にメッセージを送信するためのクライアント
-        // val messageClient = Wearable.getMessageClient(this)
-
-        val dataClient = Wearable.getDataClient(this)
-
-        // PutDataMapRequest: 「/destination」というパスに紐づくデータの入れ物を作る
-        val putDataMapRequest = PutDataMapRequest.create("/destination").apply {
-            dataMap.putDouble("latitude", latitude)
-            dataMap.putDouble("longitude", longitude)
-            // ★重要:タイムスタンプを含めておく
-            //    DataItemは「前回と全く同じ内容」だと変更なしとみなされ、
-            //    onDataChangedが呼ばれないことがあるため、毎回必ず値が変わるようにする工夫
-            dataMap.putLong("timestamp", System.currentTimeMillis())
-        }
-
-        // ① ペアリングされている端末(ウォッチ)の一覧を取得する
-        //    (Bluetoothで直接ペアリングしたスマートウォッチが対象。複数台持っている場合は全端末に送る)
-        nodeClient.connectedNodes.addOnSuccessListener { nodes ->
-            if (nodes.isEmpty()) {
-                // ウォッチが接続されていない場合
-                Toast.makeText(this, "接続中のウォッチが見つかりません", Toast.LENGTH_SHORT).show()
-                return@addOnSuccessListener
-            }
-
-            // ★追加:ノードの「名前」だけでなく「ID」も表示するようにする
-            // val nodeInfo = nodes.joinToString(", ") { "${it.displayName}(ID: ${it.id})" }
-            // Toast.makeText(this, "送信先ノード: $nodeInfo", Toast.LENGTH_LONG).show()
-
-            // ★追加:見つかったノードの「名前」を一覧表示して、本当にTicWatchが対象になっているか確認する
-            // val nodeNames = nodes.joinToString(", ") { it.displayName }
-            // Toast.makeText(this, "送信先ノード: $nodeNames", Toast.LENGTH_LONG).show()
-
-            // ② 緯度・経度を、送信できる形式(バイト配列)に変換する
-            //    今回は単純に "緯度,経度" という文字列にしてから、バイト配列化する
-            val payload = "$latitude,$longitude".toByteArray()
-
-            val putDataRequest = putDataMapRequest.asPutDataRequest()
-            // setUrgent(): 通常は多少まとめて同期されることがあるが、これを指定すると優先的に即座の同期を試みる
-            putDataRequest.setUrgent()
-
-            dataClient.putDataItem(putDataRequest)
-                .addOnSuccessListener {
-                    Toast.makeText(this, "目的地をウォッチへ送信しました", Toast.LENGTH_SHORT).show()
-                }
-                .addOnFailureListener { exception ->
-                    Toast.makeText(this, "DataItem送信失敗: ${exception.message}", Toast.LENGTH_SHORT).show()
-                }
-
-            // ③ 見つかった端末それぞれに対してメッセージを送信する
-//            for (node in nodes) {
-//                messageClient.sendMessage(
-//                    node.id,              // 送信先の端末ID
-//                    "/destination",       // ★パス:「これは目的地データですよ」という目印(ウォッチ側でこの文字列を見て判別する)
-//                    payload                // 送信する中身(バイト配列)
-//                ).addOnSuccessListener {
-//                    // ★変更:成功した場合も、どのノードに送れたかを表示する
-//                    Toast.makeText(this, "送信成功 → ${node.displayName}", Toast.LENGTH_SHORT).show()
-//                }.addOnFailureListener { exception ->
-//                    Toast.makeText(this, "送信失敗(${node.displayName}): ${exception.message}", Toast.LENGTH_SHORT).show()
-//                }
-//            }
-        }
     }
 }

@@ -40,6 +40,14 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.rememberScrollState
+import androidx.wear.compose.material.Chip
+import androidx.wear.compose.material.ChipDefaults
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.LaunchedEffect
 
 @Composable
 private fun ToggleRow(
@@ -83,7 +91,6 @@ private val backgroundColorOptions = listOf(
     0xFFBAC2D9L,
     0xFFD1E3E6L,
     0xFFB4E1FFL,
-
     0xFF40302AL,
     0xFF593E3CL,
     0xFF63524DL,
@@ -97,7 +104,6 @@ private val backgroundColorOptions = listOf(
     0xFFF2E4DCL,
     0xFFF2CA80L,
     0xFFF2E7C4L,
-
     0xFF4C533EL,
     0xFF868C56L,
     0xFF678C56L,
@@ -105,7 +111,6 @@ private val backgroundColorOptions = listOf(
     0xFF97A69CL,
     0xFFA9BF9FL,
     0xFFCCD9CFL,
-
     0xFF5A3F46L,
     0xFF52154EL,
     0xFF593F55L,
@@ -113,7 +118,6 @@ private val backgroundColorOptions = listOf(
     0xFFD9B4BBL,
     0xFFF2C9D4L,
     0xFFD9BAD1L,
-
     0xFF51A696L,
     0xFF038C8CL,
     0xFF95BFBBL,
@@ -310,6 +314,51 @@ fun SettingsScreen(currentSettings: AppSettings, onBack: () -> Unit) {
                     modifier = Modifier.width(140.dp)
                 )
                 Spacer(modifier = Modifier.padding(30.dp))
+            }
+
+            // ★追加:「目的地リセット」セクション
+            item {
+                ListHeader {
+                    Text(text = "目的地")
+                }
+            }
+            item {
+                // ★追加:誤タップ防止のため、1回目のタップで確認状態にし、
+                //    もう一度タップされたら実際にリセットする、という2段階の仕組みにする
+                var isConfirming by remember { mutableStateOf(false) }
+
+                Chip(
+                    onClick = {
+                        if (isConfirming) {
+                            // 2回目のタップ:実際にリセットを実行
+                            coroutineScope.launch {
+                                clearDestination(context)
+                            }
+                            isConfirming = false
+                        } else {
+                            // 1回目のタップ:確認状態にする
+                            isConfirming = true
+                        }
+                    },
+                    label = {
+                        Text(
+                            text = if (isConfirming) "本当にリセットしますか？" else "目的地をリセット"
+                        )
+                    },
+                    colors = ChipDefaults.chipColors(
+                        // ★確認状態のときだけ、赤系の色にして注意を促す
+                        backgroundColor = if (isConfirming) Color(0xFFBF3D3D) else Color(0xFF333333)
+                    )
+                )
+
+                // ★追加:確認状態のまま5秒操作がなければ、自動的に元の表示に戻す
+                //    (誤って確認状態のまま放置され、後で誤タップしてしまうのを防ぐため)
+                LaunchedEffect(isConfirming) {
+                    if (isConfirming) {
+                        delay(5000)
+                        isConfirming = false
+                    }
+                }
             }
 
             // ★追加:リストの一番下にも「戻るボタン」を配置
