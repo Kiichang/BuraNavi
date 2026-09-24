@@ -79,6 +79,14 @@ import android.content.Context
 import androidx.compose.foundation.layout.Arrangement
 import com.example.buranavi.R
 import androidx.compose.ui.res.painterResource
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.ui.text.style.TextAlign
+import androidx.wear.compose.material.Chip
+import androidx.wear.compose.material.ChipDefaults
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.defaultMinSize
 
 // ★追加:バッテリー残量を保持する状態
 private val batteryLevelText = mutableStateOf("-")
@@ -98,9 +106,42 @@ private val batteryReceiver = object : BroadcastReceiver() {
     }
 }
 
+// ★追加:同じ目的地に対して、到着通知を既に鳴らしたかどうか(2重通知防止)
+private var hasNotifiedArrival = false
+
+// ★追加:「ナビ終了」ボタンを表示するかどうか
+private val showEndNavButton = mutableStateOf(false)
+
+// ★追加:到着通知の距離(Composable側で毎回、設定値に更新される)
+private var arrivalNotificationDistanceMeters = 100
+
 // ComponentActivity: Composeを使う画面のベースとなるクラス
 // ★変更点:SensorEventListenerを実装(=センサーの値変化を受け取れるようにする)
 class MainActivity : ComponentActivity(), SensorEventListener {
+
+    // ★追加:到着通知用の振動(座標受信時とは違うパターンにして区別する)
+    private fun vibrateOnArrivalNotification() {
+        val vibrator = getSystemService(VIBRATOR_SERVICE) as android.os.Vibrator
+        // 短い振動を3回繰り返すパターン
+        val pattern = longArrayOf(0, 150, 100, 150, 100, 150)
+        vibrator.vibrate(android.os.VibrationEffect.createWaveform(pattern, -1))
+    }
+
+    // ★追加:距離(メートル)を、表示用の「数値」と「単位」のペアに変換する関数
+    //    1000m未満: 整数のメートル表示
+    //    1000m以上: 小数点第1位までのキロメートル表示
+    // ★変更:decimalPlacesを引数として受け取るようにした
+    private fun formatDistance(meters: Float, decimalPlaces: Int): Pair<String, String> {
+        return if (meters >= 1000f) {
+            val km = meters / 1000f
+            // ★変更:桁数を動的に組み立てる("%.1f" や "%.2f" になる)
+            val formatPattern = "%.${decimalPlaces}f"
+            val kmText = String.format(Locale.getDefault(), formatPattern, km)
+            Pair(kmText, "km")
+        } else {
+            Pair(meters.toInt().toString(), "m")
+        }
+    }
 
     // ★追加:歩数・心拍数を保持するセンサー変数
     // private var stepCounterSensor: Sensor? = null
@@ -117,12 +158,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     // ★追加:歩数センサーを取得して登録する関数
     // ★変更:1日の歩数に変更のため削除
-//    private fun registerStepCounterSensor() {
-//        stepCounterSensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
-//        stepCounterSensor?.also { sensor ->
-//            sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL)
-//        }
-//    }
+    //    private fun registerStepCounterSensor() {
+    //        stepCounterSensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
+    //        stepCounterSensor?.also { sensor ->
+    //            sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL)
+    //        }
+    //    }
 
     // ★Health Services
     private val passiveMonitoringClient by lazy {
@@ -246,7 +287,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private val locationText = mutableStateOf("取得中...")
 
     // ★追加:距離(メートル)を表示するための状態変数
-    private val distanceText = mutableStateOf("-")
+    // ★変更:文字列ではなく、生の距離(メートル)をFloat?型で保持する
+    //    nullは「まだ計算されていない」状態を表す
+    private val distanceInMeters = mutableStateOf<Float?>(null)
     // ★追加:目的地への方位角(0〜360度、真北=0度)を表示するための状態変数
     // private val bearingText = mutableStateOf("-")
 
@@ -328,6 +371,15 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             val appSettings by observeAppSettings(applicationContext)
                 .collectAsState(initial = AppSettings.DEFAULT)
 
+            // ★追加:設定値を、位置情報コールバック側からも参照できるクラスのプロパティに反映
+            arrivalNotificationDistanceMeters = appSettings.arrivalNotificationDistance
+
+            // ★追加:目的地が変わる(新しく設定される/リセットされる)たびに、通知状態をリセットする
+            LaunchedEffect(currentDestination) {
+                hasNotifiedArrival = false
+                showEndNavButton.value = false
+            }
+
             // ★追加:実際に使う文字色を計算する
             //    syncTextColorWithArrowがONなら矢印色、OFFなら選択された文字色を使う
             val effectiveTextColor = if (appSettings.syncTextColorWithArrow) {
@@ -377,23 +429,26 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                     }
                                 }
                         ) {
-                            // ★変更:矢印を画面のちょうど中央に固定配置
-                            //    Modifier.align(Alignment.Center):この要素だけを親(Box)の中央に置く指定
-                            Canvas(
-                                modifier = Modifier
-                                    .size(80.dp)
-                                    .align(Alignment.Center)
-                            ) {
-                                val arrowRotation = targetBearing - currentAzimuth
-                                rotate(degrees = arrowRotation) {
-                                    // ★変更:Ambient中は専用のシンプルな矢印(白の線)、通常時は今まで通りの設定を反映
-                                    if (isAmbient) {
-                                        drawAmbientArrowShape(color = Color.White)
-                                    } else {
-                                        drawArrowShape(
-                                            style = ArrowStyle.values()[appSettings.arrowStyle],
-                                            color = Color(appSettings.arrowColor)
-                                        )
+                            // ★変更:currentDestinationがある時だけ矢印を描画する
+                            if (currentDestination != null) {
+                                // ★変更:矢印を画面のちょうど中央に固定配置
+                                //    Modifier.align(Alignment.Center):この要素だけを親(Box)の中央に置く指定
+                                Canvas(
+                                    modifier = Modifier
+                                        .size(80.dp)
+                                        .align(Alignment.Center)
+                                ) {
+                                    val arrowRotation = targetBearing - currentAzimuth
+                                    rotate(degrees = arrowRotation) {
+                                        // ★変更:Ambient中は専用のシンプルな矢印(白の線)、通常時は今まで通りの設定を反映
+                                        if (isAmbient) {
+                                            drawAmbientArrowShape(color = Color.White)
+                                        } else {
+                                            drawArrowShape(
+                                                style = ArrowStyle.values()[appSettings.arrowStyle],
+                                                color = Color(appSettings.arrowColor)
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -419,29 +474,57 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                 if (currentDestination == null) {
                                     Text(text = "目的地未設定", color = Color.Yellow)
                                 } else {
-                                    // ★変更:数値と単位を横並びにするため、Rowで囲む
-                                    Row(
-                                        // ★重要:文字サイズが違う要素を横に並べる際、下端を揃えることで見た目が綺麗になる
-                                        verticalAlignment = Alignment.Bottom
-                                    ) {
-                                        Text(
-                                            text = distanceText.value,
-                                            // ★変更
-                                            color = if (isAmbient) Color.White else Color(effectiveTextColor),
-                                            fontSize = 24.sp,
-                                            // ★変更:Ambient中は太字を解除(塗りの多い文字は焼き付きリスクが上がるため)
-                                            fontWeight = if (isAmbient) FontWeight.Normal else FontWeight.Bold
+                                    // ★追加:distanceInMetersがまだnullの場合は「計算中」を考慮しつつ処理
+                                    val meters = distanceInMeters.value
+                                    if (meters != null) {
+                                        // ★変更:formatDistance関数を使って、数値と単位を取得する
+                                        // ★変更:appSettings.kmDecimalPlacesを渡すように変更
+                                        val (distanceValueText, distanceUnitText) = formatDistance(
+                                            meters,
+                                            appSettings.kmDecimalPlaces
                                         )
-                                        // ★追加:数値と単位の間に少しだけ隙間を空ける
-                                        Spacer(modifier = Modifier.width(1.dp))
-                                        Text(
-                                            text = "m",
-                                            // ★変更
-                                            color = if (isAmbient) Color.White else Color(effectiveTextColor),
-                                            fontSize = 16.sp,
-                                            // ★追加:単位の文字が数値の下端よりさらに沈んで見えるのを防ぐための微調整
-                                            modifier = Modifier.padding(bottom = 2.dp)
-                                        )
+                                        // ★変更:数値と単位を横並びにするため、Rowで囲む
+                                        Row(
+                                            // ★重要:文字サイズが違う要素を横に並べる際、下端を揃えることで見た目が綺麗になる
+                                            verticalAlignment = Alignment.Bottom,
+                                            // ★追加:このRow自体にタップ検知を追加(Ambient中は無効にする)
+                                            modifier = if (isAmbient) {
+                                                Modifier
+                                            } else {
+                                                Modifier.clickable(
+                                                    // ★追加:タップ時の波紋エフェクトを非表示にする(お好みで外してもOK)
+                                                    indication = null,
+                                                    interactionSource = remember { MutableInteractionSource() }
+                                                ) {
+                                                    // ★追加:1桁目⇄2桁目を切り替えて保存する
+                                                    val newDecimalPlaces = if (appSettings.kmDecimalPlaces == 1) 2 else 1
+                                                    lifecycleScope.launch {
+                                                        saveKmDecimalPlaces(applicationContext, newDecimalPlaces)
+                                                    }
+                                                }
+                                            }
+                                        ) {
+                                            Text(
+                                                text = distanceValueText, // ★修正:distanceInMeters.value → distanceValueText
+                                                color = if (isAmbient) Color.White else Color(
+                                                    effectiveTextColor
+                                                ),
+                                                fontSize = 24.sp,
+                                                // ★変更:Ambient中は太字を解除(塗りの多い文字は焼き付きリスクが上がるため)
+                                                fontWeight = if (isAmbient) FontWeight.Normal else FontWeight.Bold
+                                            )
+                                            // ★追加:数値と単位の間に少しだけ隙間を空ける
+                                            Spacer(modifier = Modifier.width(1.dp))
+                                            Text(
+                                                text = distanceUnitText, // ★変更:固定の"m"から、判定結果の単位に変更
+                                                color = if (isAmbient) Color.White else Color(
+                                                    effectiveTextColor
+                                                ),
+                                                fontSize = 16.sp,
+                                                // ★追加:単位の文字が数値の下端よりさらに沈んで見えるのを防ぐための微調整
+                                                modifier = Modifier.padding(bottom = 2.dp)
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -470,6 +553,57 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                             contentDescription = "設定",
                                             tint = if (isAmbient) Color.White else Color(effectiveTextColor)
                                         )
+                                    }
+                                }
+                            }
+
+                            // ★追加:接近通知後に表示される「ナビ終了」ボタン(誤タップ防止の2段階確認付き)
+                            if (showEndNavButton.value && currentDestination != null && !isAmbient) {
+                                var isConfirmingEndNav by remember { mutableStateOf(false) }
+
+                                Chip(
+                                    onClick = {
+                                        if (isConfirmingEndNav) {
+                                            // 2回目のタップ:実際に目的地をクリアしてナビを終了する
+                                            lifecycleScope.launch {
+                                                clearDestination(applicationContext)
+                                            }
+                                            isConfirmingEndNav = false
+                                        } else {
+                                            // 1回目のタップ:確認状態にする
+                                            isConfirmingEndNav = true
+                                        }
+                                    },
+                                    label = {
+                                        Text(
+                                            text = if (isConfirmingEndNav) "終了しますか？" else "ナビ終了",
+                                            fontSize = 10.sp,
+                                            lineHeight = 0.sp,
+                                            textAlign = TextAlign.Center,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                        )
+                                    },
+                                    colors = ChipDefaults.chipColors(
+                                        backgroundColor = if (isConfirmingEndNav) Color(0xFFBF3D3D) else Color(0xFF333333),
+                                    ),
+                                    // ★追加:Chip内部の余白を上書きして小さくする
+                                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp),
+                                    modifier = Modifier
+                                        .align(Alignment.BottomCenter)
+                                        .padding(bottom = 0.dp) // 画面下部の情報行と重ならない位置に調整
+                                        // ★ここを追加: Chip標準の最小高さ制限（約52dp）を最小化する
+                                        .defaultMinSize(minHeight = 1.dp, minWidth = 1.dp)
+                                        // ★必要に応じて高さ自体を直接固定指定することも可能です
+                                        .height(26.dp)
+                                        .fillMaxWidth()
+                                )
+
+                                // ★追加:確認状態のまま5秒操作がなければ自動的に元に戻す
+                                LaunchedEffect(isConfirmingEndNav) {
+                                    if (isConfirmingEndNav) {
+                                        delay(5000)
+                                        isConfirmingEndNav = false
                                     }
                                 }
                             }
@@ -727,24 +861,33 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         }
 
                         // distanceTo(): 現在地から引数のLocationまでの直線距離を「メートル」で返す
-                        val distanceInMeters = location.distanceTo(destinationLocation)
+                        // ★修正:ローカル変数名を distanceInMeters → rawDistanceMeters に変更(クラスの状態変数と名前が被らないように)
+                        val rawDistanceMeters = location.distanceTo(destinationLocation)
 
                         // bearingTo(): 現在地から見て引数のLocationが「真北から時計回りに何度の方向か」を返す
                         // 戻り値は -180〜180度の範囲なので、0〜360度に変換しておくと後々扱いやすい
                         val rawBearing = location.bearingTo(destinationLocation)
-                        // val bearingInDegrees = (rawBearing + 360) % 360
 
                         // ★変更:targetBearing(Float型の状態)に直接代入するようにした
                         //    これでCanvas内のarrowRotation計算に自動的に反映される
                         targetBearing = (rawBearing + 360) % 360
 
                         // 画面表示用の変数を更新(小数点以下は見づらいので整数に丸める)
-                        distanceText.value = distanceInMeters.toInt().toString()
+                        // ★変更:整数の文字列化(toInt().toString())をやめ、生の値をそのまま保存
+                        // ★修正:distanceMeters → rawDistanceMeters に変更し、クラスの状態変数(distanceInMeters)へ正しく代入する
+                        distanceInMeters.value = rawDistanceMeters
                         // bearingText.value = bearingInDegrees.toInt().toString()
                         // ★追加ここまで
+                        // ★追加:設定距離以内に入り、かつまだ通知していなければ振動+ボタン表示
+                        if (!hasNotifiedArrival && rawDistanceMeters <= arrivalNotificationDistanceMeters) {
+                            hasNotifiedArrival = true
+                            vibrateOnArrivalNotification()
+                            showEndNavButton.value = true
+                        }
                     } else {
                         // 目的地未設定の場合は、距離表示を初期状態にしておく
-                        distanceText.value = "-"
+                        // ★変更:未設定時はnullに戻す
+                        distanceInMeters.value = null
                     }
                 }
             }

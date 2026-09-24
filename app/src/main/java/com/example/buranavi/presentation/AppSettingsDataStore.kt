@@ -21,7 +21,11 @@ data class AppSettings(
     val showTime: Boolean,
     val showBattery: Boolean,
     val showSteps: Boolean,
-    val showHeartRate: Boolean
+    val showHeartRate: Boolean,
+    // ★追加:km表示の小数点桁数(1 または 2)
+    val kmDecimalPlaces: Int,
+    // ★追加:到着(接近)通知を出す距離(メートル)
+    val arrivalNotificationDistance: Int
 ) {
     companion object {
         // ★追加:まだ一度も設定を保存していない(初回起動時)に使うデフォルト値
@@ -34,7 +38,9 @@ data class AppSettings(
             showTime = false,
             showBattery = false,
             showSteps = false,
-            showHeartRate = false
+            showHeartRate = false,
+            kmDecimalPlaces = 1, // ★追加:デフォルトは小数点第1位まで
+            arrivalNotificationDistance = 100 // ★追加:デフォルト100m
         )
     }
 }
@@ -50,6 +56,19 @@ private object AppSettingsKeys {
     val SHOW_BATTERY = booleanPreferencesKey("show_battery")
     val SHOW_STEPS = booleanPreferencesKey("show_steps")
     val SHOW_HEART_RATE = booleanPreferencesKey("show_heart_rate")
+    // ★追加
+    val KM_DECIMAL_PLACES = intPreferencesKey("km_decimal_places")
+    val ARRIVAL_NOTIFICATION_DISTANCE = intPreferencesKey("arrival_notification_distance")
+}
+
+// ★追加:km表示の桁数を保存する関数
+suspend fun saveKmDecimalPlaces(context: Context, decimalPlaces: Int) {
+    context.dataStore.edit { it[AppSettingsKeys.KM_DECIMAL_PLACES] = decimalPlaces }
+}
+
+// ★追加:到着通知距離を保存する関数
+suspend fun saveArrivalNotificationDistance(context: Context, distanceMeters: Int) {
+    context.dataStore.edit { it[AppSettingsKeys.ARRIVAL_NOTIFICATION_DISTANCE] = distanceMeters }
 }
 
 // ★追加:ON/OFFを保存する関数
@@ -107,7 +126,12 @@ fun observeAppSettings(context: Context): Flow<AppSettings> {
             showTime = preferences[AppSettingsKeys.SHOW_TIME] ?: AppSettings.DEFAULT.showTime,
             showBattery = preferences[AppSettingsKeys.SHOW_BATTERY] ?: AppSettings.DEFAULT.showBattery,
             showSteps = preferences[AppSettingsKeys.SHOW_STEPS] ?: AppSettings.DEFAULT.showSteps,
-            showHeartRate = preferences[AppSettingsKeys.SHOW_HEART_RATE] ?: AppSettings.DEFAULT.showHeartRate
+            showHeartRate = preferences[AppSettingsKeys.SHOW_HEART_RATE] ?: AppSettings.DEFAULT.showHeartRate,
+            // ★追加
+            kmDecimalPlaces = preferences[AppSettingsKeys.KM_DECIMAL_PLACES] ?: AppSettings.DEFAULT.kmDecimalPlaces,
+            // ...(既存の項目はそのまま)
+            arrivalNotificationDistance = preferences[AppSettingsKeys.ARRIVAL_NOTIFICATION_DISTANCE]
+                ?: AppSettings.DEFAULT.arrivalNotificationDistance
         )
     }
 }

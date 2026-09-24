@@ -48,6 +48,10 @@ import androidx.compose.runtime.setValue
 import kotlinx.coroutines.delay
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.unit.sp
+
+// ★追加:到着通知距離の選択肢
+private val arrivalDistanceOptions = listOf(20, 50, 100, 200)
 
 @Composable
 private fun ToggleRow(
@@ -316,6 +320,22 @@ fun SettingsScreen(currentSettings: AppSettings, onBack: () -> Unit) {
                 Spacer(modifier = Modifier.padding(30.dp))
             }
 
+            item {
+                ListHeader {
+                    Text(text = "到着通知の距離")
+                }
+            }
+            item {
+                ArrivalDistanceRow(
+                    currentDistance = currentSettings.arrivalNotificationDistance,
+                    onDistanceSelected = { newValue ->
+                        coroutineScope.launch {
+                            saveArrivalNotificationDistance(context, newValue)
+                        }
+                    }
+                )
+            }
+
             // ★追加:「目的地リセット」セクション
             item {
                 ListHeader {
@@ -370,6 +390,32 @@ fun SettingsScreen(currentSettings: AppSettings, onBack: () -> Unit) {
                         tint = Color.White
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ArrivalDistanceRow(
+    currentDistance: Int,
+    onDistanceSelected: (Int) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp),
+        horizontalArrangement = Arrangement.SpaceEvenly
+    ) {
+        for (distance in arrivalDistanceOptions) {
+            val isSelected = distance == currentDistance
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (isSelected) Color.DarkGray else Color.Transparent)
+                    .clickable { onDistanceSelected(distance) }
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+            ) {
+                Text(text = "${distance}m", color = Color.White, fontSize = 12.sp)
             }
         }
     }
