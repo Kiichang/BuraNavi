@@ -79,73 +79,101 @@ private fun ToggleRow(
 
 // ★追加:設定画面で選べる背景色の候補
 private val backgroundColorOptions = listOf(
-    0xFF000000L,
-    0xFF021A27L,
-    0xFF111344L,
-    0xFF1F2A33L,
-    0xFF262626L,
-    0xFF2C3440L,
-    0xFF2E3B40L,
-    0xFF3E4A59L,
-    0xFF4A5954L,
-    0xFF556773L,
-    0xFF6B6258L,
-    0xFF8C7B77L,
-    0xFF9295A6L,
-    0xFFBAC2D9L,
-    0xFFD1E3E6L,
-    0xFFB4E1FFL,
-    0xFF40302AL,
-    0xFF593E3CL,
-    0xFF63524DL,
-    0xFF8C4F2BL,
-    0xFF8C715AL,
-    0xFF9C8D71L,
-    0xFFBF8069L,
-    0xFFD9A689L,
-    0xFFCCC0AAL,
-    0xFFD9D1C7L,
-    0xFFF2E4DCL,
-    0xFFF2CA80L,
-    0xFFF2E7C4L,
-    0xFF4C533EL,
-    0xFF868C56L,
-    0xFF678C56L,
-    0xFF5D735EL,
-    0xFF97A69CL,
-    0xFFA9BF9FL,
-    0xFFCCD9CFL,
-    0xFF5A3F46L,
-    0xFF52154EL,
-    0xFF593F55L,
-    0xFFA6808EL,
-    0xFFD9B4BBL,
-    0xFFF2C9D4L,
-    0xFFD9BAD1L,
-    0xFF51A696L,
-    0xFF038C8CL,
-    0xFF95BFBBL,
-    0xFFB4D9D5L,
-    0xFFF2DFEBL
+    // === 1. モノトーン・OLED超省電力系 ===
+    0xFF000000L, // ブラック
+    0xFF1B1B1BL, // 【追加】グラファイトグレー（超省電力）
+    0xFF2C3440L, // ダークチャコール
+
+    // === 2. ネイビー・ブルー・くすみブルー系（暗 ➔ 明） ===
+    0xFF0D1B2AL, // 【追加】ミッドナイトインディゴ（超省電力）
+    0xFF021A27L, // ディープネイビー
+    0xFF002244L, // 【追加】クラシックネイビー（高コントラスト）
+    0xFF111344L, // ナイトブルー
+    0xFF2E3B40L, // ダークブルーグレー
+    0xFF3E4A59L, // ブルーグレー
+    0xFF556773L, // ミディアムブルーグレー
+    0xFF9295A6L, // ラベンダーグレー
+    0xFFBAC2D9L, // ライトペールブルー
+    0xFFD1E3E6L, // アイスブルー
+    0xFFB4E1FFL, // スカイブルー
+
+    // === 3. ティール・ターコイズ・ミント系（暗 ➔ 明） ===
+    0xFF038C8CL, // ダークティール
+    0xFF51A696L, // セージティール
+    0xFF81B29AL, // 【追加】セージミント（カジュアル）
+    0xFF95BFBBL, // ライトティール
+    0xFFB4D9D5L, // ペールティール
+
+    // === 4. グリーン・オリーブ系（暗 ➔ 明） ===
+    0xFF003322L, // 【追加】ディープフォレストグリーン（高視認性）
+    0xFF4C533EL, // ダークオリーブ
+    0xFF5D735EL, // セージグリーン
+    0xFF678C56L, // ミディアムグリーン
+    0xFF868C56L, // オリーブイエロー
+    0xFF97A69CL, // ニュートラルグリーン
+    0xFFA9BF9FL, // ライトセージ
+    0xFFCCD9CFL, // ペールグリーン
+
+    // === 5. イエロー・クリーム・アイボリー系（暗 ➔ 明） ===
+    0xFF9C8D71L, // カーキベージュ
+    0xFFF2CA80L, // ウォームイエロー
+    0xFFF2E7C4L, // ライトアイボリー
+
+    // === 6. ブラウン・オレンジ・テラコッタ系（暗 ➔ 明） ===
+    0xFF40302AL, // ダークブラウン
+    0xFF6B6258L, // ウォームグレーブラウン
+    0xFF63524DL, // ミディアムブラウン
+    0xFF8C4F2BL, // テラコッタブラウン
+    0xFFE07A5FL, // 【追加】ウォームテラコッタ（アクティブ）
+    0xFF8C715AL, // キャメルブラウン
+    0xFFBF8069L, // テラコッタピンク
+    0xFFD9A689L, // サンドベージュ
+    0xFFD9D1C7L, // ペールベージュ
+    0xFFF2E4DCL, // アイボリーピンク
+
+    // === 7. パープル・モーヴ・ピンク系（暗 ➔ 明） ===
+    0xFF52154EL, // ディープパープル
+    0xFF593F46L, // ダークローズ
+    0xFF593F55L, // モーヴパープル
+    0xFFA6808EL, // ダスティローズ
+    0xFFD9BAD1L, // ライトモーヴ
+    0xFFD9B4BBL, // ソフトローズ
+    0xFFF2C9D4L  // ライトピンク
 )
 
 // ★追加:矢印の色の候補(はっきり見えやすい色を中心に用意)
 private val arrowColorOptions = listOf(
+// === 1. ホワイト・ライト系（万能） ===
     0xFFFFFFFFL, // White
     0xFFF2F2F2L, // Soft White
+
+    // === 2. 高輝度・ネオン系（夜間・暗い背景で最高視認性） ===
+    0xFFCCFF00L, // 【追加】Lime Neon（ナビの定番・高輝度）
+    0xFFFFD700L, // 【追加】Electric Gold（高発色ゴールド）
     0xFFFFE082L, // Soft Yellow
     0xFFFFC857L, // Warm Amber
+
+    // === 3. オレンジ・レッド・ピンク系 ===
+    0xFFFF9100L, // 【追加】Signal Orange（屋外視認性強化）
     0xFFFF8A65L, // Soft Orange
     0xFFFF6B6BL, // Coral Red
+    0xFFFF3366L, // 【追加】Vivid Pink（補色で目立つマゼンタ）
     0xFFFF8FB3L, // Soft Pink
+
+    // === 4. パープル・ブルー・ティール系 ===
     0xFFD9A7FFL, // Lavender
     0xFF9FA8FFL, // Soft Indigo
     0xFF64B5F6L, // Sky Blue
     0xFF4DD0E1L, // Cyan
     0xFF63D7C6L, // Mint
+    0xFF00E676L, // 【追加】Bright Emerald（鮮やかエメラルド）
     0xFF8BCB88L, // Soft Green
     0xFFC5D86DL, // Yellow Green
+
+    // === 5. ダーク系（明るい背景・昼間用） ===
     0xFF4A5568L, // Slate
+    0xFF432818L, // Brown
+    0xFF003366L, // 【追加】Deep Navy（明るい背景向け）
     0xFF1A1A1AL  // Near Black
 )
 

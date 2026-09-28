@@ -18,10 +18,10 @@ import androidx.compose.ui.graphics.toArgb        // ★追加
 //    enumは「決まった選択肢の中から1つを表す型」で、今回は4種類のデザインを表現する
 enum class ArrowStyle {
     TRIANGLE, // 三角形(今まで使っていたデザイン)
-    LARGE, // 大きめ三角
-    SHADOW, // 三角立体感
-//    CHEVRON,  // 山形(V字)を重ねたようなデザイン
+    SHADOW,   // 三角立体感
     NEEDLE,   // コンパスの針のように、上下で色の濃さが変わるデザイン
+    LARGE,    // 大きめ三角
+    CHEVRON,  // 山形(V字)を重ねたようなデザイン
     THIN      // 細い線だけで表現するシンプルなデザイン
 }
 
@@ -95,25 +95,25 @@ fun DrawScope.drawArrowShape(style: ArrowStyle, color: Color) {
             drawPath(path = leftHalf, color = color.copy(alpha = 0.35f))
         }
 
-//        ArrowStyle.CHEVRON -> {
-//            // 上向きの「山形」を描く(矢印の先端部分だけのシンプルな形)
-//            val path = Path().apply {
-//                moveTo(size.width / 2, 0f)
-//                lineTo(size.width, size.height * 0.55f)
-//                lineTo(size.width * 0.68f, size.height * 0.55f)
-//                lineTo(size.width * 0.68f, size.height)
-//                lineTo(size.width * 0.32f, size.height)
-//                lineTo(size.width * 0.32f, size.height * 0.55f)
-//                lineTo(0f, size.height * 0.55f)
-//                close()
-//            }
-//            drawPath(path = path, color = color)
-//        }
+        ArrowStyle.CHEVRON -> {
+            // 上向きの「山形」を描く(矢印の先端部分だけのシンプルな形)
+            val path = Path().apply {
+                moveTo(size.width / 2, 0f)
+                lineTo(size.width, size.height * 0.55f)
+                lineTo(size.width * 0.68f, size.height * 0.55f)
+                lineTo(size.width * 0.68f, size.height)
+                lineTo(size.width * 0.32f, size.height)
+                lineTo(size.width * 0.32f, size.height * 0.55f)
+                lineTo(0f, size.height * 0.55f)
+                close()
+            }
+            drawPath(path = path, color = color)
+        }
 
         ArrowStyle.NEEDLE -> {
             // コンパスの針のように、上半分(先端側)と下半分(尾側)で濃さを変える
             val topHalf = Path().apply {
-                moveTo(size.width / 2, 0f)
+                moveTo(size.width / 2, -15f)
                 lineTo(size.width * 0.68f, size.height / 2)
                 lineTo(size.width * 0.32f, size.height / 2)
                 close()
@@ -121,7 +121,7 @@ fun DrawScope.drawArrowShape(style: ArrowStyle, color: Color) {
             val bottomHalf = Path().apply {
                 moveTo(size.width * 0.32f, size.height / 2)
                 lineTo(size.width * 0.68f, size.height / 2)
-                lineTo(size.width / 2, size.height)
+                lineTo(size.width / 2, size.height + 15f)
                 close()
             }
             drawPath(path = topHalf, color = color)

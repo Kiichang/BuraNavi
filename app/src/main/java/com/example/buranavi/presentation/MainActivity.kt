@@ -87,6 +87,7 @@ import androidx.wear.compose.material.Chip
 import androidx.wear.compose.material.ChipDefaults
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.defaultMinSize
+import android.os.SystemClock
 
 // ★追加:バッテリー残量を保持する状態
 private val batteryLevelText = mutableStateOf("-")
@@ -114,6 +115,18 @@ private val showEndNavButton = mutableStateOf(false)
 
 // ★追加:到着通知の距離(Composable側で毎回、設定値に更新される)
 private var arrivalNotificationDistanceMeters = 100
+
+// ★追加:最後に位置情報が届いてから、この時間(ミリ秒)を超えたら「途絶」とみなす
+private const val GPS_STALE_THRESHOLD_MS = 15_000L
+// ★追加:接近通知を出してよい、位置情報の誤差(メートル)の上限
+private const val ARRIVAL_MAX_ACCURACY_METERS = 50f
+
+// ★追加:最後に位置情報が届いた時刻(端末起動からの経過ミリ秒)。0は「まだ一度も届いていない」
+private var lastFixElapsedMs = 0L
+// ★追加:GPSが途絶(または未取得)の状態かどうか。画面表示に使う
+private val isGpsStale = mutableStateOf(false)
+// ★追加:システムから「今は位置情報が使えない」と通知されたかどうか
+private val locationUnavailable = mutableStateOf(false)
 
 // ComponentActivity: Composeを使う画面のベースとなるクラス
 // ★変更点:SensorEventListenerを実装(=センサーの値変化を受け取れるようにする)
@@ -357,6 +370,16 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 }
             }
 
+            // ★追加:1秒ごとに、GPSが途絶しているかどうかを判定する
+            LaunchedEffect(Unit) {
+                while (true) {
+                    val elapsed = SystemClock.elapsedRealtime() - lastFixElapsedMs
+                    isGpsStale.value = lastFixElapsedMs == 0L ||
+                            elapsed > GPS_STALE_THRESHOLD_MS
+                    delay(1000)
+                }
+            }
+
             // ★追加:DataStoreのFlowを画面側で監視する
             //    collectAsState(): Flowから流れてくる値を、Composeが再描画できる「状態」に変換してくれる
             //    initial = null: まだ最初の値が届く前は、nullとして扱う
@@ -429,6 +452,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                     }
                                 }
                         ) {
+                            // ★追加:GPSが途絶しているかどうか(矢印・距離の表示で使う)
+                            val gpsStale = isGpsStale.value
                             // ★変更:currentDestinationがある時だけ矢印を描画する
                             if (currentDestination != null) {
                                 // ★変更:矢印を画面のちょうど中央に固定配置
@@ -442,11 +467,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                     rotate(degrees = arrowRotation) {
                                         // ★変更:Ambient中は専用のシンプルな矢印(白の線)、通常時は今まで通りの設定を反映
                                         if (isAmbient) {
-                                            drawAmbientArrowShape(color = Color.White)
+                                            // ★変更:途絶中はグレーにする
+                                            drawAmbientArrowShape(color = if (gpsStale) Color.Gray else Color.White)
                                         } else {
                                             drawArrowShape(
                                                 style = ArrowStyle.values()[appSettings.arrowStyle],
-                                                color = Color(appSettings.arrowColor)
+                                                color = if (gpsStale) Color.Gray else Color(appSettings.arrowColor)
                                             )
                                         }
                                     }
@@ -506,9 +532,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                         ) {
                                             Text(
                                                 text = distanceValueText, // ★修正:distanceInMeters.value → distanceValueText
-                                                color = if (isAmbient) Color.White else Color(
-                                                    effectiveTextColor
-                                                ),
+                                                color = if (gpsStale) Color.Gray else if (isAmbient) Color.White else Color(effectiveTextColor),
                                                 fontSize = 24.sp,
                                                 // ★変更:Ambient中は太字を解除(塗りの多い文字は焼き付きリスクが上がるため)
                                                 fontWeight = if (isAmbient) FontWeight.Normal else FontWeight.Bold
@@ -517,14 +541,16 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                             Spacer(modifier = Modifier.width(1.dp))
                                             Text(
                                                 text = distanceUnitText, // ★変更:固定の"m"から、判定結果の単位に変更
-                                                color = if (isAmbient) Color.White else Color(
-                                                    effectiveTextColor
-                                                ),
+                                                color = if (gpsStale) Color.Gray else if (isAmbient) Color.White else Color(effectiveTextColor),
                                                 fontSize = 16.sp,
                                                 // ★追加:単位の文字が数値の下端よりさらに沈んで見えるのを防ぐための微調整
                                                 modifier = Modifier.padding(bottom = 2.dp)
                                             )
                                         }
+                                    }
+                                    // ★追加:GPSが途絶(または未取得)のとき、距離の下に案内を表示する
+                                    if (gpsStale) {
+                                        Text(text = "GPS待機中", color = Color.Yellow, fontSize = 11.sp)
                                     }
                                 }
                             }
@@ -844,6 +870,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 // 最新の位置情報を1件取り出す
                 val location = result.lastLocation
                 if (location != null) {
+                    // ★追加:位置が届いた時刻を記録し、途絶状態を解除する
+                    lastFixElapsedMs = SystemClock.elapsedRealtime()
+                    locationUnavailable.value = false
+                    isGpsStale.value = false
                     // 緯度(latitude)と経度(longitude)を文字列にして画面表示用の変数に代入
                     locationText.value =
                         "緯度: ${location.latitude}\n経度: ${location.longitude}"
@@ -879,7 +909,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         // bearingText.value = bearingInDegrees.toInt().toString()
                         // ★追加ここまで
                         // ★追加:設定距離以内に入り、かつまだ通知していなければ振動+ボタン表示
-                        if (!hasNotifiedArrival && rawDistanceMeters <= arrivalNotificationDistanceMeters) {
+                        // ★変更:位置情報の誤差が大きいときは、接近通知の判定を行わない
+                        //    誤差の上限は「設定距離」と50mの小さい方(ただし最低15m)にする。
+                        //    例えば設定が20mなのに誤差が40mの位置で判定すると、実際は離れていても通知が鳴ってしまうため
+                        val maxAccuracy = minOf(ARRIVAL_MAX_ACCURACY_METERS, arrivalNotificationDistanceMeters.toFloat())
+                            .coerceAtLeast(15f)
+                        val isAccurateEnough = location.hasAccuracy() && location.accuracy <= maxAccuracy
+                        if (!hasNotifiedArrival && isAccurateEnough && rawDistanceMeters <= arrivalNotificationDistanceMeters) {
                             hasNotifiedArrival = true
                             vibrateOnArrivalNotification()
                             showEndNavButton.value = true
@@ -889,6 +925,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         // ★変更:未設定時はnullに戻す
                         distanceInMeters.value = null
                     }
+                }
+            }
+            // ★追加:位置情報が使える状態かどうかが変わったときに、システムから呼ばれる
+            override fun onLocationAvailability(availability: LocationAvailability) {
+                if (!availability.isLocationAvailable) {
+                    locationUnavailable.value = true
                 }
             }
         }
