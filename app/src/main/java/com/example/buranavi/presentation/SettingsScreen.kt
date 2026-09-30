@@ -37,6 +37,7 @@ import androidx.wear.compose.material.ToggleChip
 import androidx.wear.compose.material.ToggleChipDefaults
 import androidx.wear.compose.material.Switch
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.rememberScrollState
@@ -49,6 +50,9 @@ import kotlinx.coroutines.delay
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.unit.sp
+import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
+import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
+import androidx.wear.compose.foundation.rotary.RotaryScrollableDefaults
 
 // ★追加:到着通知距離の選択肢
 private val arrivalDistanceOptions = listOf(20, 50, 100, 200)
@@ -78,7 +82,8 @@ private fun ToggleRow(
 }
 
 // ★追加:設定画面で選べる背景色の候補
-private val backgroundColorOptions = listOf(
+// ★変更:private を外して、他のファイル(AppSettingsDataStore.kt)からも参照できるようにする
+val backgroundColorOptions = listOf(
     // === 1. モノトーン・OLED超省電力系 ===
     0xFF000000L, // ブラック
     0xFF1B1B1BL, // 【追加】グラファイトグレー（超省電力）
@@ -142,7 +147,8 @@ private val backgroundColorOptions = listOf(
 )
 
 // ★追加:矢印の色の候補(はっきり見えやすい色を中心に用意)
-private val arrowColorOptions = listOf(
+// ★変更:同様にprivateを外す
+val arrowColorOptions = listOf(
 // === 1. ホワイト・ライト系（万能） ===
     0xFFFFFFFFL, // White
     0xFFF2F2F2L, // Soft White
@@ -184,11 +190,23 @@ private val textColorOptions = listOf(
 )
 
 @Composable
-fun SettingsScreen(currentSettings: AppSettings, onBack: () -> Unit) {
+fun SettingsScreen(
+        currentSettings: AppSettings,
+        onBack: () -> Unit,
+        // ★追加
+        heartRatePermissionGranted: Boolean,
+        onRequestHeartRatePermission: () -> Unit,
+        // ★追加
+        onRestartApp: () -> Unit
+    ) {
     // ★追加:設定変更(保存)は時間がかかる処理なので、コルーチンスコープを用意しておく
     //    rememberCoroutineScope():この画面が表示されている間、使い続けられるスコープを作る
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
+
+    // ★追加:リストのスクロール位置を管理する状態
+    //    リューズの回転量を、このリストのスクロール量に変換するために必要
+    val listState = rememberScalingLazyListState()
 
     Box(
         modifier = Modifier
@@ -200,6 +218,10 @@ fun SettingsScreen(currentSettings: AppSettings, onBack: () -> Unit) {
         //    「丸い画面に合わせた」表示効果が自動でつく
         ScalingLazyColumn(
             modifier = Modifier.fillMaxSize(),
+            // ★追加:上で用意した状態を渡す
+            state = listState,
+            // ★追加:リューズの回転をこのリストのスクロールに結びつける
+            rotaryScrollableBehavior = RotaryScrollableDefaults.behavior(listState),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             // ★追加:リストの一番上に「戻るボタン」を配置
@@ -341,11 +363,27 @@ fun SettingsScreen(currentSettings: AppSettings, onBack: () -> Unit) {
                     label = "心拍数",
                     checked = currentSettings.showHeartRate,
                     onCheckedChange = { newValue ->
-                        coroutineScope.launch { saveShowHeartRate(context, newValue) }
+                        if (newValue && !heartRatePermissionGranted) {
+                            // ★変更:権限が無い状態でONにしようとしたら、
+                            //    表示設定はまだ保存せず、権限リクエストだけを行う
+                            //    (許可されたら、MainActivity側で自動的にtrueが保存される)
+                            onRequestHeartRatePermission()
+                        } else {
+                            coroutineScope.launch {
+                                saveShowHeartRate(context, newValue)
+                            }
+                        }
                     },
                     modifier = Modifier.width(140.dp)
                 )
-                Spacer(modifier = Modifier.padding(30.dp))
+                // ★追加:権限が無いときだけ、補足の説明を小さく表示する
+                if (!heartRatePermissionGranted) {
+                    Text(
+                        text = "心拍数の利用には端末の権限が必要です",
+                        color = Color.Gray,
+                        fontSize = 9.sp
+                    )
+                }
             }
 
             item {
@@ -359,6 +397,24 @@ fun SettingsScreen(currentSettings: AppSettings, onBack: () -> Unit) {
                     onDistanceSelected = { newValue ->
                         coroutineScope.launch {
                             saveArrivalNotificationDistance(context, newValue)
+                        }
+                    }
+                )
+            }
+
+            // アンビエントモードON/OFF
+            item {
+                ListHeader {
+                    Text(text = "画面")
+                }
+            }
+            item {
+                ToggleRow(
+                    label = "アンビエントモード",
+                    checked = currentSettings.ambientModeEnabled,
+                    onCheckedChange = { newValue ->
+                        coroutineScope.launch {
+                            saveAmbientModeEnabled(context, newValue)
                         }
                     }
                 )
@@ -407,6 +463,20 @@ fun SettingsScreen(currentSettings: AppSettings, onBack: () -> Unit) {
                         isConfirming = false
                     }
                 }
+            }
+
+            item {
+                ListHeader {
+                    Text(text = "アプリ")
+                }
+            }
+            item {
+                Chip(
+                    onClick = onRestartApp,
+                    label = { Text(text = "アプリを再起動") },
+                    colors = ChipDefaults.chipColors(backgroundColor = Color(0xFF333333)),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                )
             }
 
             // ★追加:リストの一番下にも「戻るボタン」を配置

@@ -25,22 +25,31 @@ data class AppSettings(
     // ★追加:km表示の小数点桁数(1 または 2)
     val kmDecimalPlaces: Int,
     // ★追加:到着(接近)通知を出す距離(メートル)
-    val arrivalNotificationDistance: Int
+    val arrivalNotificationDistance: Int,
+    // ★追加:Ambient Modeを使うかどうか
+    val ambientModeEnabled: Boolean
 ) {
     companion object {
         // ★追加:まだ一度も設定を保存していない(初回起動時)に使うデフォルト値
         val DEFAULT = AppSettings(
-            backgroundColor = 0xFF000000L, // 黒
-            arrowColor = 0xFFFF0000L,      // 赤
+            // ★変更:リストの先頭を直接参照する
+            backgroundColor = backgroundColorOptions.first(),
+            arrowColor = arrowColorOptions.first(),
             textColor = 0xFFFFFFFFL, // ★追加:デフォルトは白
-            syncTextColorWithArrow = false, // ★追加:デフォルトはOFF(今まで通りの挙動)
+            // ★変更:デフォルトをONに
+            syncTextColorWithArrow = true,
             arrowStyle = 0,                // ArrowStyle.TRIANGLE(三角形、今までの矢印と同じ)
-            showTime = false,
-            showBattery = false,
+            // ★変更:デフォルトをONに
+            showTime = true,
+            // ★変更:デフォルトをONに
+            showBattery = true,
+            // ★変更なし:falseのまま
             showSteps = false,
+            // ★変更なし:falseのまま
             showHeartRate = false,
             kmDecimalPlaces = 1, // ★追加:デフォルトは小数点第1位まで
-            arrivalNotificationDistance = 100 // ★追加:デフォルト100m
+            arrivalNotificationDistance = 100, // ★追加:デフォルト100m
+            ambientModeEnabled = true // ★追加:デフォルトはON(今までの挙動のまま)
         )
     }
 }
@@ -59,6 +68,12 @@ private object AppSettingsKeys {
     // ★追加
     val KM_DECIMAL_PLACES = intPreferencesKey("km_decimal_places")
     val ARRIVAL_NOTIFICATION_DISTANCE = intPreferencesKey("arrival_notification_distance")
+    val AMBIENT_MODE_ENABLED = booleanPreferencesKey("ambient_mode_enabled")
+}
+
+// ★追加:ON/OFFを保存する関数
+suspend fun saveAmbientModeEnabled(context: Context, value: Boolean) {
+    context.dataStore.edit { it[AppSettingsKeys.AMBIENT_MODE_ENABLED] = value }
 }
 
 // ★追加:km表示の桁数を保存する関数
@@ -131,7 +146,10 @@ fun observeAppSettings(context: Context): Flow<AppSettings> {
             kmDecimalPlaces = preferences[AppSettingsKeys.KM_DECIMAL_PLACES] ?: AppSettings.DEFAULT.kmDecimalPlaces,
             // ...(既存の項目はそのまま)
             arrivalNotificationDistance = preferences[AppSettingsKeys.ARRIVAL_NOTIFICATION_DISTANCE]
-                ?: AppSettings.DEFAULT.arrivalNotificationDistance
+                ?: AppSettings.DEFAULT.arrivalNotificationDistance,
+            // ★追加
+            ambientModeEnabled = preferences[AppSettingsKeys.AMBIENT_MODE_ENABLED]
+                ?: AppSettings.DEFAULT.ambientModeEnabled
         )
     }
 }

@@ -88,6 +88,18 @@ import androidx.wear.compose.material.ChipDefaults
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.defaultMinSize
 import android.os.SystemClock
+import android.net.Uri
+import android.provider.Settings
+import androidx.core.app.ActivityCompat
+
+// ★追加:心拍センサーの権限が今許可されているかどうか
+private val heartRatePermissionGranted = mutableStateOf(false)
+// ★追加:設定画面でONにしようとして権限リクエストを出した、という状態を覚えておくフラグ
+//    (権限が下りたときに、自動でshowHeartRateをtrueにするために使う)
+private var pendingHeartRateToggleOn = false
+// ★追加:心拍センサーの権限を一度でもリクエストしたことがあるか
+//    (「まだ聞いていない」のか「拒否されて聞けなくなった」のかを区別するために使う)
+private var heartRatePermissionRequestedOnce = false
 
 // ★追加:バッテリー残量を保持する状態
 private val batteryLevelText = mutableStateOf("-")
@@ -274,24 +286,32 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private val requestPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
             // permissionsは Map<String, Boolean> の形で返ってくる(各権限名がキー、許可結果が値)
-            val locationGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] ?: false
-
-            if (locationGranted) {
-                startLocationUpdates()
-            } else {
-                locationText.value = "位置情報の許可が必要です"
+            // ★変更:containsKeyで「今回、位置情報をリクエストしたかどうか」を確認してから処理する
+            //    (心拍数だけを個別にリクエストした際、位置情報の結果が無いのに
+            //     「許可が必要です」と誤表示されるのを防ぐため)
+            if (permissions.containsKey(Manifest.permission.ACCESS_FINE_LOCATION)) {
+                val locationGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] ?: false
+                if (locationGranted) {
+                    startLocationUpdates()
+                } else {
+                    locationText.value = "位置情報の許可が必要です"
+                }
             }
 
-            // ★追加:歩数・心拍センサーは、許可されていればそれぞれ登録処理を呼ぶ
-            //   (許可されなかった場合は、該当項目を表示しないだけにして、アプリ自体は問題なく動くようにする)
-            val activityRecognitionGranted = permissions[Manifest.permission.ACTIVITY_RECOGNITION] ?: false
-            val bodySensorsGranted = permissions[Manifest.permission.BODY_SENSORS] ?: false
+            if (permissions.containsKey(Manifest.permission.BODY_SENSORS)) {
+                val bodySensorsGranted = permissions[Manifest.permission.BODY_SENSORS] ?: false
+                heartRatePermissionGranted.value = bodySensorsGranted
 
-            if (activityRecognitionGranted) {
-                registerDailySteps()
-            }
-            if (bodySensorsGranted) {
-                registerHeartRateSensor()
+                if (bodySensorsGranted) {
+                    // ★変更:recreate()を削除し、元のシンプルな形に戻す
+                    registerHeartRateSensor()
+                    if (pendingHeartRateToggleOn) {
+                        lifecycleScope.launch {
+                            saveShowHeartRate(applicationContext, true)
+                        }
+                    }
+                }
+                pendingHeartRateToggleOn = false
             }
         }
 
@@ -394,6 +414,17 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             val appSettings by observeAppSettings(applicationContext)
                 .collectAsState(initial = AppSettings.DEFAULT)
 
+            // ★追加:設定が変わるたびに、画面の常時点灯フラグを切り替える
+            //    ON(Ambient使用):フラグを外す → システムのAmbient機能に任せる
+            //    OFF(Ambient不使用):フラグを立てる → 画面を常にフル点灯させ、ウォッチフェイスに戻らないようにする
+            LaunchedEffect(appSettings.ambientModeEnabled) {
+                if (appSettings.ambientModeEnabled) {
+                    window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                } else {
+                    window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                }
+            }
+
             // ★追加:設定値を、位置情報コールバック側からも参照できるクラスのプロパティに反映
             arrivalNotificationDistanceMeters = appSettings.arrivalNotificationDistance
 
@@ -416,7 +447,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 //    isAlwaysOnScreen = true:常時表示(Always-On)を有効にする指定
                 AmbientAware { ambientStateUpdate ->
                     // ★追加:今、Ambient状態(簡易表示)かどうかを取り出す
-                    val isAmbient = ambientStateUpdate.isAmbient
+                    // ★変更:設定でOFFにしていれば、システム側がAmbientに入っても「Ambientではない」ことにする
+                    val isAmbient = appSettings.ambientModeEnabled && ambientStateUpdate.isAmbient
                     // ★追加:showSettingsScreenの値によって、表示する画面を丸ごと切り替える
                     if (showSettingsScreen) {
                         // ★追加:設定画面(中身は次のステップで作り込みます。今は仮の内容)
@@ -425,7 +457,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             onBack = {
                                 // 「戻る」が押されたら、メイン画面表示に戻す
                                 showSettingsScreen = false
-                            }
+                            },
+                            // ★追加
+                            heartRatePermissionGranted = heartRatePermissionGranted.value,
+                            onRequestHeartRatePermission = { requestHeartRatePermission() },
+                            // ★追加:再起動ボタンから呼ばれる処理
+                            onRestartApp = { recreate() }
                         )
                     } else {
                         // ★追加:歯車アイコンをタップから3秒後に自動的に隠す処理
@@ -736,6 +773,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     //    (バッテリー消費を抑えるため、画面が見えていないときは止めるのが定石)
     override fun onResume() {
         super.onResume()
+        // ★追加:システム設定から戻ってきた場合などに備えて、最新の権限状態を反映する
+        heartRatePermissionGranted.value = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.BODY_SENSORS
+        ) == PackageManager.PERMISSION_GRANTED
+
         rotationVectorSensor?.also { sensor ->
             // このActivity自身(this)がリスナーとして登録される
             // SENSOR_DELAY_UI: UI表示用に適した更新頻度(頻繁すぎずカクつかない程度)
@@ -754,6 +796,34 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
     }
 
+    // ★追加:設定画面から呼ばれる、心拍数の権限をリクエストする関数
+    private fun requestHeartRatePermission() {
+        val currentlyGranted = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.BODY_SENSORS
+        ) == PackageManager.PERMISSION_GRANTED
+
+        // shouldShowRequestPermissionRationale:
+        //   「まだ一度も聞いていない」または「今聞けば普通にダイアログが出せる」場合はtrue寄りの判定になる。
+        //   「ユーザーが過去に拒否していて、システムがもうダイアログを出してくれない」状態だとfalseになる
+        val canShowDialog = ActivityCompat.shouldShowRequestPermissionRationale(
+            this, Manifest.permission.BODY_SENSORS
+        )
+
+        if (!currentlyGranted && !canShowDialog && heartRatePermissionRequestedOnce) {
+            // ★過去にリクエスト済みなのにダイアログが出せない = 恒久的に拒否されている可能性が高い
+            //    この場合はダイアログではなく、アプリの権限設定画面を直接開く
+            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.fromParts("package", packageName, null)
+            }
+            startActivity(intent)
+        } else {
+            // 通常のリクエスト(初回、またはまだダイアログを出せる状態)
+            heartRatePermissionRequestedOnce = true
+            pendingHeartRateToggleOn = true
+            requestPermissionLauncher.launch(arrayOf(Manifest.permission.BODY_SENSORS))
+        }
+    }
+
     // ★追加:画面から離れたらセンサーの購読を止める(バッテリー節約)
     override fun onPause() {
         super.onPause()
@@ -769,39 +839,25 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
         when (event.sensor.type) {
             Sensor.TYPE_ROTATION_VECTOR -> {
-            // センサーの生データ(event.values)から「回転行列」を計算する
-            // 回転行列:3D空間での端末の傾き・向きを表す数学的なデータ形式
-            val rotationMatrix = FloatArray(9)
-            SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
+                // センサーの生データ(event.values)から「回転行列」を計算する
+                // 回転行列:3D空間での端末の傾き・向きを表す数学的なデータ形式
+                val rotationMatrix = FloatArray(9)
+                SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
 
-            // 回転行列から「方位角・ピッチ・ロール」の3つの角度を取り出す
-            // orientationAngles[0] = 方位角(azimuth、真北からの角度)← 今回欲しいのはこれ
-            // orientationAngles[1] = ピッチ(前後の傾き)← 今回は未使用
-            // orientationAngles[2] = ロール(左右の傾き)← 今回は未使用
-            val orientationAngles = FloatArray(3)
-            SensorManager.getOrientation(rotationMatrix, orientationAngles)
+                // 回転行列から「方位角・ピッチ・ロール」の3つの角度を取り出す
+                // orientationAngles[0] = 方位角(azimuth、真北からの角度)← 今回欲しいのはこれ
+                // orientationAngles[1] = ピッチ(前後の傾き)← 今回は未使用
+                // orientationAngles[2] = ロール(左右の傾き)← 今回は未使用
+                val orientationAngles = FloatArray(3)
+                SensorManager.getOrientation(rotationMatrix, orientationAngles)
 
-            // 計算結果は「ラジアン」という単位で返ってくるので、見慣れた「度」に変換する
-            val azimuthInRadians = orientationAngles[0]
-            val azimuthInDegrees = Math.toDegrees(azimuthInRadians.toDouble()).toFloat()
+                // 計算結果は「ラジアン」という単位で返ってくるので、見慣れた「度」に変換する
+                val azimuthInRadians = orientationAngles[0]
+                val azimuthInDegrees = Math.toDegrees(azimuthInRadians.toDouble()).toFloat()
 
-            // 度の値は-180〜180の範囲で返ってくるので、0〜360度に変換して保持
-            currentAzimuth = (azimuthInDegrees + 360) % 360
-        }
-            // ★追加:歩数センサーの処理
-//            Sensor.TYPE_STEP_COUNTER -> {
-//                val totalStepsSinceBoot = event.values[0]
-//
-//                // まだ基準値を記録していなければ、今回の値を基準として保存する
-//                if (stepCounterBaseline == null) {
-//                    stepCounterBaseline = totalStepsSinceBoot
-//                }
-//
-//                // 基準値からの増分を「今回の歩数」として計算する
-//                val stepsThisSession = (totalStepsSinceBoot - (stepCounterBaseline ?: totalStepsSinceBoot)).toInt()
-//                stepsText.value = stepsThisSession.toString()
-//            }
-
+                // 度の値は-180〜180の範囲で返ってくるので、0〜360度に変換して保持
+                currentAzimuth = (azimuthInDegrees + 360) % 360
+            }
             // ★追加:心拍センサーの処理
             Sensor.TYPE_HEART_RATE -> {
                 val bpm = event.values[0]
@@ -835,19 +891,30 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             this, Manifest.permission.BODY_SENSORS
         ) == PackageManager.PERMISSION_GRANTED
 
-        // ★追加:まだ許可されていない権限だけをリストアップする
+        heartRatePermissionGranted.value = bodySensorsGranted
+
+        // ★変更:「全部揃っているか」の判定を待たず、許可されている機能はここで個別に開始する
+        if (locationGranted) {
+            startLocationUpdates()
+        }
+        if (activityRecognitionGranted) {
+            registerDailySteps() // ★修正:registerStepCounterSensor() → registerDailySteps()
+        }
+        if (bodySensorsGranted) {
+            registerHeartRateSensor()
+        }
+
+        // ★変更:足りない権限だけをリストアップするのは変更なし
         val permissionsToRequest = mutableListOf<String>()
         if (!locationGranted) permissionsToRequest.add(Manifest.permission.ACCESS_FINE_LOCATION)
         if (!activityRecognitionGranted) permissionsToRequest.add(Manifest.permission.ACTIVITY_RECOGNITION)
-        if (!bodySensorsGranted) permissionsToRequest.add(Manifest.permission.BODY_SENSORS)
+        if (!bodySensorsGranted) {
+            permissionsToRequest.add(Manifest.permission.BODY_SENSORS)
+            heartRatePermissionRequestedOnce = true
+        }
 
-        if (permissionsToRequest.isEmpty()) {
-            // すべて許可済みの場合、そのまま各機能を開始する
-            startLocationUpdates()
-            registerDailySteps()
-            registerHeartRateSensor()
-        } else {
-            // 未許可のものだけ、まとめてダイアログでリクエストする
+        // ★変更:足りないものがあるときだけリクエストする(isEmptyでのif/else分岐は撤廃)
+        if (permissionsToRequest.isNotEmpty()) {
             requestPermissionLauncher.launch(permissionsToRequest.toTypedArray())
         }
     }
