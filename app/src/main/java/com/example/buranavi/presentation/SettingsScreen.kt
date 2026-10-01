@@ -197,6 +197,9 @@ fun SettingsScreen(
         heartRatePermissionGranted: Boolean,
         onRequestHeartRatePermission: () -> Unit,
         // ★追加
+        stepsPermissionGranted: Boolean,
+        onRequestStepsPermission: () -> Unit,
+        // ★追加
         onRestartApp: () -> Unit
     ) {
     // ★追加:設定変更(保存)は時間がかかる処理なので、コルーチンスコープを用意しておく
@@ -353,10 +356,23 @@ fun SettingsScreen(
                     label = "歩数",
                     checked = currentSettings.showSteps,
                     onCheckedChange = { newValue ->
-                        coroutineScope.launch { saveShowSteps(context, newValue) }
+                        if (newValue && !stepsPermissionGranted) {
+                            onRequestStepsPermission()
+                        } else {
+                            coroutineScope.launch {
+                                saveShowSteps(context, newValue)
+                            }
+                        }
                     },
                     modifier = Modifier.width(140.dp)
                 )
+                if (!stepsPermissionGranted) {
+                    Text(
+                        text = "歩数の利用には端末の権限が必要です",
+                        color = Color.Gray,
+                        fontSize = 9.sp
+                    )
+                }
             }
             item {
                 ToggleRow(

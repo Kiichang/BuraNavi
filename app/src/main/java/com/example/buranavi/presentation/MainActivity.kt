@@ -92,6 +92,16 @@ import android.net.Uri
 import android.provider.Settings
 import androidx.core.app.ActivityCompat
 
+// ★追加:歩数(身体活動)の権限が今許可されているかどうか
+private val stepsPermissionGranted = mutableStateOf(false)
+// ★追加:設定画面でONにしようとして権限リクエストを出した、という状態を覚えておくフラグ
+private var pendingStepsToggleOn = false
+// ★追加:歩数の権限を一度でもリクエストしたことがあるか
+private var stepsPermissionRequestedOnce = false
+
+// ★追加:位置情報の権限が無い状態かどうか
+private val locationPermissionDenied = mutableStateOf(false)
+
 // ★追加:心拍センサーの権限が今許可されているかどうか
 private val heartRatePermissionGranted = mutableStateOf(false)
 // ★追加:設定画面でONにしようとして権限リクエストを出した、という状態を覚えておくフラグ
@@ -291,16 +301,36 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             //     「許可が必要です」と誤表示されるのを防ぐため)
             if (permissions.containsKey(Manifest.permission.ACCESS_FINE_LOCATION)) {
                 val locationGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] ?: false
+                locationPermissionDenied.value = !locationGranted // ★確認:この行があるか
                 if (locationGranted) {
+                    locationPermissionDenied.value = false // ★追加
                     startLocationUpdates()
                 } else {
-                    locationText.value = "位置情報の許可が必要です"
+                    locationPermissionDenied.value = true // ★追加
                 }
+            }
+
+            if (permissions.containsKey(Manifest.permission.ACTIVITY_RECOGNITION)) {
+                val activityRecognitionGranted = permissions[Manifest.permission.ACTIVITY_RECOGNITION] ?: false
+                // ★追加:画面表示用の状態を更新
+                stepsPermissionGranted.value = activityRecognitionGranted
+
+                if (activityRecognitionGranted) {
+                    registerDailySteps()
+                    // ★追加:設定画面でONにしようとした操作の続きとして、表示設定も自動でONにする
+                    if (pendingStepsToggleOn) {
+                        lifecycleScope.launch {
+                            saveShowSteps(applicationContext, true)
+                        }
+                    }
+                }
+                pendingStepsToggleOn = false
             }
 
             if (permissions.containsKey(Manifest.permission.BODY_SENSORS)) {
                 val bodySensorsGranted = permissions[Manifest.permission.BODY_SENSORS] ?: false
                 heartRatePermissionGranted.value = bodySensorsGranted
+//                stepsPermissionGranted.value = activityRecognitionGranted
 
                 if (bodySensorsGranted) {
                     // ★変更:recreate()を削除し、元のシンプルな形に戻す
@@ -461,6 +491,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             // ★追加
                             heartRatePermissionGranted = heartRatePermissionGranted.value,
                             onRequestHeartRatePermission = { requestHeartRatePermission() },
+                            // ★追加
+                            stepsPermissionGranted = stepsPermissionGranted.value,
+                            onRequestStepsPermission = { requestStepsPermission() },
                             // ★追加:再起動ボタンから呼ばれる処理
                             onRestartApp = { recreate() }
                         )
@@ -534,7 +567,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                         fontSize = 14.sp
                                     )
                                 }
-                                if (currentDestination == null) {
+                                if (locationPermissionDenied.value) {
+                                    Text(
+                                        text = "位置情報の\n権限がありません",
+                                        color = Color.Red,
+                                        textAlign = TextAlign.Center,
+                                    )
+                                } else if (currentDestination == null) {
                                     Text(text = "目的地未設定", color = Color.Yellow)
                                 } else {
                                     // ★追加:distanceInMetersがまだnullの場合は「計算中」を考慮しつつ処理
@@ -778,6 +817,15 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             this, Manifest.permission.BODY_SENSORS
         ) == PackageManager.PERMISSION_GRANTED
 
+        stepsPermissionGranted.value = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.ACTIVITY_RECOGNITION
+        ) == PackageManager.PERMISSION_GRANTED
+
+        // ★追加:システム設定から戻ってきた場合などに備えて、最新の権限状態を反映する
+        locationPermissionDenied.value = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.ACCESS_FINE_LOCATION
+        ) != PackageManager.PERMISSION_GRANTED
+
         rotationVectorSensor?.also { sensor ->
             // このActivity自身(this)がリスナーとして登録される
             // SENSOR_DELAY_UI: UI表示用に適した更新頻度(頻繁すぎずカクつかない程度)
@@ -821,6 +869,28 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             heartRatePermissionRequestedOnce = true
             pendingHeartRateToggleOn = true
             requestPermissionLauncher.launch(arrayOf(Manifest.permission.BODY_SENSORS))
+        }
+    }
+
+    // ★追加:設定画面から呼ばれる、歩数の権限をリクエストする関数
+    private fun requestStepsPermission() {
+        val currentlyGranted = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.ACTIVITY_RECOGNITION
+        ) == PackageManager.PERMISSION_GRANTED
+
+        val canShowDialog = ActivityCompat.shouldShowRequestPermissionRationale(
+            this, Manifest.permission.ACTIVITY_RECOGNITION
+        )
+
+        if (!currentlyGranted && !canShowDialog && stepsPermissionRequestedOnce) {
+            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.fromParts("package", packageName, null)
+            }
+            startActivity(intent)
+        } else {
+            stepsPermissionRequestedOnce = true
+            pendingStepsToggleOn = true
+            requestPermissionLauncher.launch(arrayOf(Manifest.permission.ACTIVITY_RECOGNITION))
         }
     }
 
@@ -883,6 +953,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             this, Manifest.permission.ACCESS_FINE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
 
+        // ★追加:許可・拒否どちらの場合も、必ずこの時点の状態を反映する
+        locationPermissionDenied.value = !locationGranted
+
         val activityRecognitionGranted = ContextCompat.checkSelfPermission(
             this, Manifest.permission.ACTIVITY_RECOGNITION
         ) == PackageManager.PERMISSION_GRANTED
@@ -907,7 +980,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         // ★変更:足りない権限だけをリストアップするのは変更なし
         val permissionsToRequest = mutableListOf<String>()
         if (!locationGranted) permissionsToRequest.add(Manifest.permission.ACCESS_FINE_LOCATION)
-        if (!activityRecognitionGranted) permissionsToRequest.add(Manifest.permission.ACTIVITY_RECOGNITION)
+        if (!activityRecognitionGranted) {
+            permissionsToRequest.add(Manifest.permission.ACTIVITY_RECOGNITION)
+            stepsPermissionRequestedOnce = true // ★追加
+        }
         if (!bodySensorsGranted) {
             permissionsToRequest.add(Manifest.permission.BODY_SENSORS)
             heartRatePermissionRequestedOnce = true
