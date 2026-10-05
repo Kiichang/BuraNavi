@@ -89,6 +89,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.defaultMinSize
 import android.os.SystemClock
 import android.net.Uri
+import android.os.Build
 import android.provider.Settings
 import androidx.core.app.ActivityCompat
 
@@ -100,7 +101,14 @@ private var pendingStepsToggleOn = false
 private var stepsPermissionRequestedOnce = false
 
 // ★追加:位置情報の権限が無い状態かどうか
-private val locationPermissionDenied = mutableStateOf(false)
+private val locationPermissionState =
+    mutableStateOf(LocationPermissionState.DENIED)
+
+private enum class LocationPermissionState {
+    PRECISE,
+    APPROXIMATE,
+    DENIED
+}
 
 // ★追加:心拍センサーの権限が今許可されているかどうか
 private val heartRatePermissionGranted = mutableStateOf(false)
@@ -129,14 +137,28 @@ private val batteryReceiver = object : BroadcastReceiver() {
     }
 }
 
-// ★追加:同じ目的地に対して、到着通知を既に鳴らしたかどうか(2重通知防止)
-private var hasNotifiedArrival = false
+// 到着通知が現在「通知可能」な状態か
+private var arrivalNotificationArmed = true
+
+// 再通知解除距離以上だったGPS更新の連続回数
+private var rearmOutsideCount = 0
+
+// 到着距離判定の初回GPS位置を取得済みか
+private var arrivalRadiusInitialized = false
+
+// 通知距離から、再通知可能になるまでに追加で離れる距離
+private const val ARRIVAL_REARM_MARGIN_METERS = 30f
+
+// 再通知可能にするために必要な連続GPS取得回数
+private const val ARRIVAL_REARM_REQUIRED_COUNT = 2
 
 // ★追加:「ナビ終了」ボタンを表示するかどうか
 private val showEndNavButton = mutableStateOf(false)
 
 // ★追加:到着通知の距離(Composable側で毎回、設定値に更新される)
 private var arrivalNotificationDistanceMeters = 100
+// ★追加:到着通知自体を使うかどうか
+private var arrivalNotificationEnabled = true
 
 // ★追加:最後に位置情報が届いてから、この時間(ミリ秒)を超えたら「途絶」とみなす
 private const val GPS_STALE_THRESHOLD_MS = 15_000L
@@ -178,8 +200,18 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
     }
 
+    private val readHeartRatePermission =
+        "android.permission.health.READ_HEART_RATE"
+
+    private fun getHeartRatePermission(): String {
+        return if (Build.VERSION.SDK_INT >= 36) {
+            readHeartRatePermission
+        } else {
+            Manifest.permission.BODY_SENSORS
+        }
+    }
+
     // ★追加:歩数・心拍数を保持するセンサー変数
-    // private var stepCounterSensor: Sensor? = null
     private var heartRateSensor: Sensor? = null
 
     // ★追加:画面表示用の状態(取得できるまでは "-" と表示しておく)
@@ -285,6 +317,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     //    lateinit var = 「後で必ず値を入れます」という宣言(onCreateの中で初期化する)
     private lateinit var fusedLocationClient: FusedLocationProviderClient
 
+    // GPS位置情報の更新を現在購読中かどうか
+    private var isLocationUpdatesRunning = false
+
     // ★追加:センサーを管理するシステムサービス
     private lateinit var sensorManager: SensorManager
     // ★追加:回転ベクトルセンサー(端末の向きを計算するためのセンサー)
@@ -299,14 +334,30 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             // ★変更:containsKeyで「今回、位置情報をリクエストしたかどうか」を確認してから処理する
             //    (心拍数だけを個別にリクエストした際、位置情報の結果が無いのに
             //     「許可が必要です」と誤表示されるのを防ぐため)
-            if (permissions.containsKey(Manifest.permission.ACCESS_FINE_LOCATION)) {
-                val locationGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] ?: false
-                locationPermissionDenied.value = !locationGranted // ★確認:この行があるか
-                if (locationGranted) {
-                    locationPermissionDenied.value = false // ★追加
-                    startLocationUpdates()
-                } else {
-                    locationPermissionDenied.value = true // ★追加
+            if (
+                permissions.containsKey(Manifest.permission.ACCESS_FINE_LOCATION) ||
+                permissions.containsKey(Manifest.permission.ACCESS_COARSE_LOCATION)
+            ) {
+
+                val newState = getLocationPermissionState()
+
+                locationPermissionState.value = newState
+
+                when (newState) {
+
+                    LocationPermissionState.PRECISE -> {
+                        startLocationUpdates()
+                    }
+
+                    LocationPermissionState.APPROXIMATE -> {
+                        // BuraNaviでは正確な位置情報が必要なので
+                        // おおよその位置だけではGPSナビを開始しない
+                        stopLocationUpdates()
+                    }
+
+                    LocationPermissionState.DENIED -> {
+                        stopLocationUpdates()
+                    }
                 }
             }
 
@@ -327,20 +378,31 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 pendingStepsToggleOn = false
             }
 
-            if (permissions.containsKey(Manifest.permission.BODY_SENSORS)) {
-                val bodySensorsGranted = permissions[Manifest.permission.BODY_SENSORS] ?: false
-                heartRatePermissionGranted.value = bodySensorsGranted
-//                stepsPermissionGranted.value = activityRecognitionGranted
+            val heartRatePermission =
+                getHeartRatePermission()
 
-                if (bodySensorsGranted) {
-                    // ★変更:recreate()を削除し、元のシンプルな形に戻す
+            if (permissions.containsKey(heartRatePermission)) {
+
+                val granted =
+                    permissions[heartRatePermission] ?: false
+
+                heartRatePermissionGranted.value =
+                    granted
+
+                if (granted) {
+
                     registerHeartRateSensor()
+
                     if (pendingHeartRateToggleOn) {
                         lifecycleScope.launch {
-                            saveShowHeartRate(applicationContext, true)
+                            saveShowHeartRate(
+                                applicationContext,
+                                true
+                            )
                         }
                     }
                 }
+
                 pendingHeartRateToggleOn = false
             }
         }
@@ -430,19 +492,23 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 }
             }
 
+            // ★追加:Flowを1回だけ作成し、再描画のたびに作り直されないようにする
+            val destinationFlow = remember { observeDestination(applicationContext) }
+            val appSettingsFlow = remember { observeAppSettings(applicationContext) }
             // ★追加:DataStoreのFlowを画面側で監視する
             //    collectAsState(): Flowから流れてくる値を、Composeが再描画できる「状態」に変換してくれる
             //    initial = null: まだ最初の値が届く前は、nullとして扱う
-            val destinationFromStore by observeDestination(applicationContext)
-                .collectAsState(initial = null)
+            // ★変更:上で作ったFlowを使う
+            val destinationFromStore by destinationFlow.collectAsState(initial = null)
+            val appSettings by appSettingsFlow.collectAsState(initial = AppSettings.DEFAULT)
 
             // ★追加:Flowから新しい値が届くたびに、currentDestinationを更新する
             //    (LaunchedEffectを使うのが一般的だが、まずはシンプルにこの形で進める)
             currentDestination = destinationFromStore
 
             // ★追加:保存されている見た目の設定を監視する
-            val appSettings by observeAppSettings(applicationContext)
-                .collectAsState(initial = AppSettings.DEFAULT)
+//            val appSettings by observeAppSettings(applicationContext)
+//                .collectAsState(initial = AppSettings.DEFAULT)
 
             // ★追加:設定が変わるたびに、画面の常時点灯フラグを切り替える
             //    ON(Ambient使用):フラグを外す → システムのAmbient機能に任せる
@@ -457,10 +523,17 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
             // ★追加:設定値を、位置情報コールバック側からも参照できるクラスのプロパティに反映
             arrivalNotificationDistanceMeters = appSettings.arrivalNotificationDistance
+            // ★追加
+            arrivalNotificationEnabled = appSettings.arrivalNotificationEnabled
 
             // ★追加:目的地が変わる(新しく設定される/リセットされる)たびに、通知状態をリセットする
-            LaunchedEffect(currentDestination) {
-                hasNotifiedArrival = false
+            LaunchedEffect(
+                currentDestination,
+                appSettings.arrivalNotificationDistance
+            ) {
+                arrivalNotificationArmed = true
+                rearmOutsideCount = 0
+                arrivalRadiusInitialized = false
                 showEndNavButton.value = false
             }
 
@@ -563,70 +636,105 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                     Text(
                                         text = currentTimeText,
                                         // ★変更:Ambient中はColor.White固定、通常時は設定色を反映
-                                        color = if (isAmbient) Color.White else Color(effectiveTextColor),
+                                        color = if (isAmbient) Color.White else Color(
+                                            effectiveTextColor
+                                        ),
                                         fontSize = 14.sp
                                     )
                                 }
-                                if (locationPermissionDenied.value) {
-                                    Text(
-                                        text = "位置情報の\n権限がありません",
-                                        color = Color.Red,
-                                        textAlign = TextAlign.Center,
-                                    )
-                                } else if (currentDestination == null) {
-                                    Text(text = "目的地未設定", color = Color.Yellow)
-                                } else {
-                                    // ★追加:distanceInMetersがまだnullの場合は「計算中」を考慮しつつ処理
-                                    val meters = distanceInMeters.value
-                                    if (meters != null) {
-                                        // ★変更:formatDistance関数を使って、数値と単位を取得する
-                                        // ★変更:appSettings.kmDecimalPlacesを渡すように変更
-                                        val (distanceValueText, distanceUnitText) = formatDistance(
-                                            meters,
-                                            appSettings.kmDecimalPlaces
+                                when (locationPermissionState.value) {
+
+                                    LocationPermissionState.DENIED -> {
+                                        Text(
+                                            text = "位置情報の\n権限がありません",
+                                            color = Color.Red,
+                                            textAlign = TextAlign.Center
                                         )
-                                        // ★変更:数値と単位を横並びにするため、Rowで囲む
-                                        Row(
-                                            // ★重要:文字サイズが違う要素を横に並べる際、下端を揃えることで見た目が綺麗になる
-                                            verticalAlignment = Alignment.Bottom,
-                                            // ★追加:このRow自体にタップ検知を追加(Ambient中は無効にする)
-                                            modifier = if (isAmbient) {
-                                                Modifier
-                                            } else {
-                                                Modifier.clickable(
-                                                    // ★追加:タップ時の波紋エフェクトを非表示にする(お好みで外してもOK)
-                                                    indication = null,
-                                                    interactionSource = remember { MutableInteractionSource() }
-                                                ) {
-                                                    // ★追加:1桁目⇄2桁目を切り替えて保存する
-                                                    val newDecimalPlaces = if (appSettings.kmDecimalPlaces == 1) 2 else 1
-                                                    lifecycleScope.launch {
-                                                        saveKmDecimalPlaces(applicationContext, newDecimalPlaces)
+                                    }
+
+                                    LocationPermissionState.APPROXIMATE -> {
+                                        Text(
+                                            text = "正確な位置情報を\n許可してください",
+                                            color = Color.Yellow,
+                                            textAlign = TextAlign.Center
+                                        )
+                                    }
+
+                                    LocationPermissionState.PRECISE -> {
+
+                                        if (currentDestination == null) {
+
+                                            Text(
+                                                text = "目的地未設定",
+                                                color = Color.Yellow
+                                            )
+
+                                        } else {
+                                            // ★追加:distanceInMetersがまだnullの場合は「計算中」を考慮しつつ処理
+                                            val meters = distanceInMeters.value
+                                            if (meters != null) {
+                                                // ★変更:formatDistance関数を使って、数値と単位を取得する
+                                                // ★変更:appSettings.kmDecimalPlacesを渡すように変更
+                                                val (distanceValueText, distanceUnitText) = formatDistance(
+                                                    meters,
+                                                    appSettings.kmDecimalPlaces
+                                                )
+                                                // ★変更:数値と単位を横並びにするため、Rowで囲む
+                                                Row(
+                                                    // ★重要:文字サイズが違う要素を横に並べる際、下端を揃えることで見た目が綺麗になる
+                                                    verticalAlignment = Alignment.Bottom,
+                                                    // ★追加:このRow自体にタップ検知を追加(Ambient中は無効にする)
+                                                    modifier = if (isAmbient) {
+                                                        Modifier
+                                                    } else {
+                                                        Modifier.clickable(
+                                                            // ★追加:タップ時の波紋エフェクトを非表示にする(お好みで外してもOK)
+                                                            indication = null,
+                                                            interactionSource = remember { MutableInteractionSource() }
+                                                        ) {
+                                                            // ★追加:1桁目⇄2桁目を切り替えて保存する
+                                                            val newDecimalPlaces =
+                                                                if (appSettings.kmDecimalPlaces == 1) 2 else 1
+                                                            lifecycleScope.launch {
+                                                                saveKmDecimalPlaces(
+                                                                    applicationContext,
+                                                                    newDecimalPlaces
+                                                                )
+                                                            }
+                                                        }
                                                     }
+                                                ) {
+                                                    Text(
+                                                        text = distanceValueText, // ★修正:distanceInMeters.value → distanceValueText
+                                                        color = if (gpsStale) Color.Gray else if (isAmbient) Color.White else Color(
+                                                            effectiveTextColor
+                                                        ),
+                                                        fontSize = 24.sp,
+                                                        // ★変更:Ambient中は太字を解除(塗りの多い文字は焼き付きリスクが上がるため)
+                                                        fontWeight = if (isAmbient) FontWeight.Normal else FontWeight.Bold
+                                                    )
+                                                    // ★追加:数値と単位の間に少しだけ隙間を空ける
+                                                    Spacer(modifier = Modifier.width(1.dp))
+                                                    Text(
+                                                        text = distanceUnitText, // ★変更:固定の"m"から、判定結果の単位に変更
+                                                        color = if (gpsStale) Color.Gray else if (isAmbient) Color.White else Color(
+                                                            effectiveTextColor
+                                                        ),
+                                                        fontSize = 16.sp,
+                                                        // ★追加:単位の文字が数値の下端よりさらに沈んで見えるのを防ぐための微調整
+                                                        modifier = Modifier.padding(bottom = 2.dp)
+                                                    )
                                                 }
                                             }
-                                        ) {
-                                            Text(
-                                                text = distanceValueText, // ★修正:distanceInMeters.value → distanceValueText
-                                                color = if (gpsStale) Color.Gray else if (isAmbient) Color.White else Color(effectiveTextColor),
-                                                fontSize = 24.sp,
-                                                // ★変更:Ambient中は太字を解除(塗りの多い文字は焼き付きリスクが上がるため)
-                                                fontWeight = if (isAmbient) FontWeight.Normal else FontWeight.Bold
-                                            )
-                                            // ★追加:数値と単位の間に少しだけ隙間を空ける
-                                            Spacer(modifier = Modifier.width(1.dp))
-                                            Text(
-                                                text = distanceUnitText, // ★変更:固定の"m"から、判定結果の単位に変更
-                                                color = if (gpsStale) Color.Gray else if (isAmbient) Color.White else Color(effectiveTextColor),
-                                                fontSize = 16.sp,
-                                                // ★追加:単位の文字が数値の下端よりさらに沈んで見えるのを防ぐための微調整
-                                                modifier = Modifier.padding(bottom = 2.dp)
-                                            )
+                                            // ★追加:GPSが途絶(または未取得)のとき、距離の下に案内を表示する
+                                            if (gpsStale) {
+                                                Text(
+                                                    text = "GPS待機中",
+                                                    color = Color.Yellow,
+                                                    fontSize = 11.sp
+                                                )
+                                            }
                                         }
-                                    }
-                                    // ★追加:GPSが途絶(または未取得)のとき、距離の下に案内を表示する
-                                    if (gpsStale) {
-                                        Text(text = "GPS待機中", color = Color.Yellow, fontSize = 11.sp)
                                     }
                                 }
                             }
@@ -812,19 +920,34 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     //    (バッテリー消費を抑えるため、画面が見えていないときは止めるのが定石)
     override fun onResume() {
         super.onResume()
-        // ★追加:システム設定から戻ってきた場合などに備えて、最新の権限状態を反映する
-        heartRatePermissionGranted.value = ContextCompat.checkSelfPermission(
-            this, Manifest.permission.BODY_SENSORS
-        ) == PackageManager.PERMISSION_GRANTED
+
+        val heartRatePermission =
+            getHeartRatePermission()
+
+        heartRatePermissionGranted.value =
+            ContextCompat.checkSelfPermission(
+                this,
+                heartRatePermission
+            ) == PackageManager.PERMISSION_GRANTED
 
         stepsPermissionGranted.value = ContextCompat.checkSelfPermission(
             this, Manifest.permission.ACTIVITY_RECOGNITION
         ) == PackageManager.PERMISSION_GRANTED
 
-        // ★追加:システム設定から戻ってきた場合などに備えて、最新の権限状態を反映する
-        locationPermissionDenied.value = ContextCompat.checkSelfPermission(
-            this, Manifest.permission.ACCESS_FINE_LOCATION
-        ) != PackageManager.PERMISSION_GRANTED
+        locationPermissionState.value =
+            getLocationPermissionState()
+
+        when (locationPermissionState.value) {
+
+            LocationPermissionState.PRECISE -> {
+                startLocationUpdates()
+            }
+
+            LocationPermissionState.APPROXIMATE,
+            LocationPermissionState.DENIED -> {
+                stopLocationUpdates()
+            }
+        }
 
         rotationVectorSensor?.also { sensor ->
             // このActivity自身(this)がリスナーとして登録される
@@ -846,29 +969,50 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     // ★追加:設定画面から呼ばれる、心拍数の権限をリクエストする関数
     private fun requestHeartRatePermission() {
-        val currentlyGranted = ContextCompat.checkSelfPermission(
-            this, Manifest.permission.BODY_SENSORS
-        ) == PackageManager.PERMISSION_GRANTED
 
-        // shouldShowRequestPermissionRationale:
-        //   「まだ一度も聞いていない」または「今聞けば普通にダイアログが出せる」場合はtrue寄りの判定になる。
-        //   「ユーザーが過去に拒否していて、システムがもうダイアログを出してくれない」状態だとfalseになる
-        val canShowDialog = ActivityCompat.shouldShowRequestPermissionRationale(
-            this, Manifest.permission.BODY_SENSORS
-        )
+        val heartRatePermission =
+            getHeartRatePermission()
 
-        if (!currentlyGranted && !canShowDialog && heartRatePermissionRequestedOnce) {
-            // ★過去にリクエスト済みなのにダイアログが出せない = 恒久的に拒否されている可能性が高い
-            //    この場合はダイアログではなく、アプリの権限設定画面を直接開く
-            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                data = Uri.fromParts("package", packageName, null)
-            }
+        val currentlyGranted =
+            ContextCompat.checkSelfPermission(
+                this,
+                heartRatePermission
+            ) == PackageManager.PERMISSION_GRANTED
+
+        val canShowDialog =
+            ActivityCompat.shouldShowRequestPermissionRationale(
+                this,
+                heartRatePermission
+            )
+
+        if (
+            !currentlyGranted &&
+            !canShowDialog &&
+            heartRatePermissionRequestedOnce
+        ) {
+
+            val intent =
+                Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS
+                ).apply {
+                    data =
+                        Uri.fromParts(
+                            "package",
+                            packageName,
+                            null
+                        )
+                }
+
             startActivity(intent)
+
         } else {
-            // 通常のリクエスト(初回、またはまだダイアログを出せる状態)
+
             heartRatePermissionRequestedOnce = true
             pendingHeartRateToggleOn = true
-            requestPermissionLauncher.launch(arrayOf(Manifest.permission.BODY_SENSORS))
+
+            requestPermissionLauncher.launch(
+                arrayOf(heartRatePermission)
+            )
         }
     }
 
@@ -900,6 +1044,15 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         sensorManager.unregisterListener(this)
         // ★追加:バッテリー受信の解除
         unregisterReceiver(batteryReceiver)
+    }
+
+    override fun onDestroy() {
+
+        // Activityが破棄される際、
+        // GPS購読を必ず解除する
+        stopLocationUpdates()
+
+        super.onDestroy()
     }
 
     // ★追加:SensorEventListenerを実装したことで必須になるメソッド①
@@ -946,52 +1099,250 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         // 今回は使わないが、実装しないとコンパイルエラーになるため空実装として残す
     }
 
+    private fun getLocationPermissionState(): LocationPermissionState {
+
+        val fineGranted =
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+
+        val coarseGranted =
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+
+        return when {
+            fineGranted -> {
+                LocationPermissionState.PRECISE
+            }
+
+            coarseGranted -> {
+                LocationPermissionState.APPROXIMATE
+            }
+
+            else -> {
+                LocationPermissionState.DENIED
+            }
+        }
+    }
+
     // ⑨ 権限が既に許可されているかどうかを確認する関数
-// ★変更:関数名も内容に合わせて変更(位置情報だけでなく複数権限をまとめてチェックするため)
+    // ★変更:関数名も内容に合わせて変更(位置情報だけでなく複数権限をまとめてチェックするため)
     private fun checkAndRequestPermissions() {
-        val locationGranted = ContextCompat.checkSelfPermission(
-            this, Manifest.permission.ACCESS_FINE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED
+        val locationState =
+            getLocationPermissionState()
 
-        // ★追加:許可・拒否どちらの場合も、必ずこの時点の状態を反映する
-        locationPermissionDenied.value = !locationGranted
+        locationPermissionState.value =
+            locationState
 
-        val activityRecognitionGranted = ContextCompat.checkSelfPermission(
-            this, Manifest.permission.ACTIVITY_RECOGNITION
-        ) == PackageManager.PERMISSION_GRANTED
+        val activityRecognitionGranted =
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ACTIVITY_RECOGNITION
+            ) == PackageManager.PERMISSION_GRANTED
 
-        val bodySensorsGranted = ContextCompat.checkSelfPermission(
-            this, Manifest.permission.BODY_SENSORS
-        ) == PackageManager.PERMISSION_GRANTED
+        val heartRatePermission =
+            getHeartRatePermission()
 
-        heartRatePermissionGranted.value = bodySensorsGranted
+        val heartRateGranted =
+            ContextCompat.checkSelfPermission(
+                this,
+                heartRatePermission
+            ) == PackageManager.PERMISSION_GRANTED
 
-        // ★変更:「全部揃っているか」の判定を待たず、許可されている機能はここで個別に開始する
-        if (locationGranted) {
+        heartRatePermissionGranted.value =
+            heartRateGranted
+
+        // 正確な位置情報がある場合のみGPS開始
+        if (
+            locationState ==
+            LocationPermissionState.PRECISE
+        ) {
             startLocationUpdates()
         }
+
         if (activityRecognitionGranted) {
             registerDailySteps() // ★修正:registerStepCounterSensor() → registerDailySteps()
         }
-        if (bodySensorsGranted) {
+
+        if (heartRateGranted) {
             registerHeartRateSensor()
         }
 
         // ★変更:足りない権限だけをリストアップするのは変更なし
         val permissionsToRequest = mutableListOf<String>()
-        if (!locationGranted) permissionsToRequest.add(Manifest.permission.ACCESS_FINE_LOCATION)
-        if (!activityRecognitionGranted) {
-            permissionsToRequest.add(Manifest.permission.ACTIVITY_RECOGNITION)
-            stepsPermissionRequestedOnce = true // ★追加
+
+        // 位置情報はFINE + COARSEを必ずセットで要求
+        if (locationState != LocationPermissionState.PRECISE) {
+
+            permissionsToRequest.add(
+                Manifest.permission.ACCESS_FINE_LOCATION
+            )
+
+            permissionsToRequest.add(
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            )
         }
-        if (!bodySensorsGranted) {
-            permissionsToRequest.add(Manifest.permission.BODY_SENSORS)
-            heartRatePermissionRequestedOnce = true
+
+        if (!activityRecognitionGranted) {
+            permissionsToRequest.add(
+                Manifest.permission.ACTIVITY_RECOGNITION
+            )
+
+            stepsPermissionRequestedOnce = true
+        }
+
+        if (!heartRateGranted) {
+
+            permissionsToRequest.add(
+                heartRatePermission
+            )
+
+            heartRatePermissionRequestedOnce =
+                true
         }
 
         // ★変更:足りないものがあるときだけリクエストする(isEmptyでのif/else分岐は撤廃)
         if (permissionsToRequest.isNotEmpty()) {
-            requestPermissionLauncher.launch(permissionsToRequest.toTypedArray())
+            requestPermissionLauncher.launch(
+                permissionsToRequest.toTypedArray()
+            )
+        }
+    }
+
+    // 位置情報が更新されるたびに呼ばれる「コールバック」を定義
+    val locationCallback = object : LocationCallback() {
+        override fun onLocationResult(result: LocationResult) {
+            // 最新の位置情報を1件取り出す
+            val location = result.lastLocation
+            if (location != null) {
+                // ★追加:位置が届いた時刻を記録し、途絶状態を解除する
+                lastFixElapsedMs = SystemClock.elapsedRealtime()
+                locationUnavailable.value = false
+                isGpsStale.value = false
+                // 緯度(latitude)と経度(longitude)を文字列にして画面表示用の変数に代入
+                locationText.value =
+                    "緯度: ${location.latitude}\n経度: ${location.longitude}"
+
+                // ★ここから追加:目的地との距離・方位角を計算する処理
+                // ★変更:目的地が設定されている場合のみ、距離・方位を計算する
+                val destination = currentDestination
+                if (destination != null) {
+                    // Locationクラスのインスタンスを「目的地用」としてもう1つ作る
+                    // (distanceTo/bearingToは「Location同士」で計算するメソッドのため、
+                    //  目的地の緯度経度もLocationオブジェクトにしておく必要がある)
+                    val destinationLocation =
+                        Location("destination").apply {
+                            latitude = destination.first
+                            longitude = destination.second
+                        }
+
+                    // distanceTo(): 現在地から引数のLocationまでの直線距離を「メートル」で返す
+                    // ★修正:ローカル変数名を distanceInMeters → rawDistanceMeters に変更(クラスの状態変数と名前が被らないように)
+                    val rawDistanceMeters = location.distanceTo(destinationLocation)
+
+                    // bearingTo(): 現在地から見て引数のLocationが「真北から時計回りに何度の方向か」を返す
+                    // 戻り値は -180〜180度の範囲なので、0〜360度に変換しておくと後々扱いやすい
+                    val rawBearing = location.bearingTo(destinationLocation)
+
+                    // ★変更:targetBearing(Float型の状態)に直接代入するようにした
+                    //    これでCanvas内のarrowRotation計算に自動的に反映される
+                    targetBearing = (rawBearing + 360) % 360
+
+                    // 画面表示用の変数を更新(小数点以下は見づらいので整数に丸める)
+                    // ★変更:整数の文字列化(toInt().toString())をやめ、生の値をそのまま保存
+                    // ★修正:distanceMeters → rawDistanceMeters に変更し、クラスの状態変数(distanceInMeters)へ正しく代入する
+                    distanceInMeters.value = rawDistanceMeters
+                    // bearingText.value = bearingInDegrees.toInt().toString()
+                    // ★追加ここまで
+                    // ★追加:設定距離以内に入り、かつまだ通知していなければ振動+ボタン表示
+                    // ★変更:位置情報の誤差が大きいときは、接近通知の判定を行わない
+                    //    誤差の上限は「設定距離」と50mの小さい方(ただし最低15m)にする。
+                    //    例えば設定が20mなのに誤差が40mの位置で判定すると、実際は離れていても通知が鳴ってしまうため
+                    val maxAccuracy =
+                        minOf(
+                            ARRIVAL_MAX_ACCURACY_METERS,
+                            arrivalNotificationDistanceMeters.toFloat()
+                        ).coerceAtLeast(15f)
+
+                    val isAccurateEnough =
+                        location.hasAccuracy() &&
+                                location.accuracy <= maxAccuracy
+
+                    // 通知する距離
+                    val notificationDistance =
+                        arrivalNotificationDistanceMeters.toFloat()
+
+                    // 再通知可能になる距離
+                    // 例: 200m設定なら230m
+                    val rearmDistance =
+                        notificationDistance +
+                                ARRIVAL_REARM_MARGIN_METERS
+
+                    val isInsideArrivalRadius =
+                        rawDistanceMeters <= notificationDistance
+
+                    val isOutsideRearmRadius =
+                        rawDistanceMeters >= rearmDistance
+
+                    if (!arrivalRadiusInitialized) {
+                        // 初回GPS位置は基準として記録するだけ。
+                        // 最初から通知距離以内にいる場合は、その場では通知しない。
+                        arrivalNotificationArmed = !isInsideArrivalRadius
+                        rearmOutsideCount = 0
+                        arrivalRadiusInitialized = true
+                    } else {
+                        if (arrivalNotificationArmed) {
+                            // 通知可能状態:
+                            // 設定距離以内に入ったら通知
+                            if (
+                                arrivalNotificationEnabled &&
+                                isAccurateEnough &&
+                                isInsideArrivalRadius
+                            ) {
+                                vibrateOnArrivalNotification()
+                                showEndNavButton.value = true
+                                // 一度通知したのでロック
+                                arrivalNotificationArmed = false
+                                rearmOutsideCount = 0
+                            }
+                        } else {
+                            // 通知後のロック状態:
+                            // 「設定距離 + 30m」以上離れた状態を
+                            // 2回連続で確認したら再通知可能にする
+                            if (
+                                isAccurateEnough &&
+                                isOutsideRearmRadius
+                            ) {
+                                rearmOutsideCount++
+                                if (
+                                    rearmOutsideCount >=
+                                    ARRIVAL_REARM_REQUIRED_COUNT
+                                ) {
+                                    arrivalNotificationArmed = true
+                                    rearmOutsideCount = 0
+                                }
+                            } else {
+                                // 途中で再通知解除ラインより内側に戻ったら
+                                // 連続回数をリセット
+                                rearmOutsideCount = 0
+                            }
+                        }
+                    }
+                } else {
+                    // 目的地未設定の場合は、距離表示を初期状態にしておく
+                    // ★変更:未設定時はnullに戻す
+                    distanceInMeters.value = null
+                }
+            }
+        }
+        // ★追加:位置情報が使える状態かどうかが変わったときに、システムから呼ばれる
+        override fun onLocationAvailability(availability: LocationAvailability) {
+            if (!availability.isLocationAvailable) {
+                locationUnavailable.value = true
+            }
         }
     }
 
@@ -1001,104 +1352,74 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     //    呼び出し元(checkLocationPermission)で必ず確認済みのため警告を抑制している
     @SuppressLint("MissingPermission")
     private fun startLocationUpdates() {
-        // 位置情報をどのくらいの頻度・精度で取得するかの設定
-        val locationRequest = LocationRequest.Builder(
-            Priority.PRIORITY_HIGH_ACCURACY, // 高精度モード(GPSを積極的に使う)
-            5000L // 更新間隔:5000ミリ秒 = 5秒ごとに位置を更新
-        ).build()
 
-        // 位置情報が更新されるたびに呼ばれる「コールバック」を定義
-        val locationCallback = object : LocationCallback() {
-            override fun onLocationResult(result: LocationResult) {
-                // 最新の位置情報を1件取り出す
-                val location = result.lastLocation
-                if (location != null) {
-                    // ★追加:位置が届いた時刻を記録し、途絶状態を解除する
-                    lastFixElapsedMs = SystemClock.elapsedRealtime()
-                    locationUnavailable.value = false
-                    isGpsStale.value = false
-                    // 緯度(latitude)と経度(longitude)を文字列にして画面表示用の変数に代入
-                    locationText.value =
-                        "緯度: ${location.latitude}\n経度: ${location.longitude}"
+        // すでにGPS更新を購読中なら、
+        // 二重登録しない
+        if (isLocationUpdatesRunning) {
+            return
+        }
 
-                    // ★ここから追加:目的地との距離・方位角を計算する処理
-                    // ★変更:目的地が設定されている場合のみ、距離・方位を計算する
-                    val destination = currentDestination
-                    if (destination != null) {
-                        // Locationクラスのインスタンスを「目的地用」としてもう1つ作る
-                        // (distanceTo/bearingToは「Location同士」で計算するメソッドのため、
-                        //  目的地の緯度経度もLocationオブジェクトにしておく必要がある)
-                        val destinationLocation = Location("destination").apply {
-                            latitude = destination.first
-                            longitude = destination.second
-                        }
+        val locationRequest =
+            LocationRequest.Builder(
+                Priority.PRIORITY_HIGH_ACCURACY,
+                5000L
+            ).build()
 
-                        // distanceTo(): 現在地から引数のLocationまでの直線距離を「メートル」で返す
-                        // ★修正:ローカル変数名を distanceInMeters → rawDistanceMeters に変更(クラスの状態変数と名前が被らないように)
-                        val rawDistanceMeters = location.distanceTo(destinationLocation)
+        // request完了前にもう一度呼ばれても
+        // 二重登録されないよう、先にtrueにする
+        isLocationUpdatesRunning = true
 
-                        // bearingTo(): 現在地から見て引数のLocationが「真北から時計回りに何度の方向か」を返す
-                        // 戻り値は -180〜180度の範囲なので、0〜360度に変換しておくと後々扱いやすい
-                        val rawBearing = location.bearingTo(destinationLocation)
+        fusedLocationClient
+            .requestLocationUpdates(
+                locationRequest,
+                locationCallback,
+                mainLooper
+            )
+            .addOnSuccessListener {
 
-                        // ★変更:targetBearing(Float型の状態)に直接代入するようにした
-                        //    これでCanvas内のarrowRotation計算に自動的に反映される
-                        targetBearing = (rawBearing + 360) % 360
+                locationText.value =
+                    "位置情報のリクエスト成功。取得待ち..."
 
-                        // 画面表示用の変数を更新(小数点以下は見づらいので整数に丸める)
-                        // ★変更:整数の文字列化(toInt().toString())をやめ、生の値をそのまま保存
-                        // ★修正:distanceMeters → rawDistanceMeters に変更し、クラスの状態変数(distanceInMeters)へ正しく代入する
-                        distanceInMeters.value = rawDistanceMeters
-                        // bearingText.value = bearingInDegrees.toInt().toString()
-                        // ★追加ここまで
-                        // ★追加:設定距離以内に入り、かつまだ通知していなければ振動+ボタン表示
-                        // ★変更:位置情報の誤差が大きいときは、接近通知の判定を行わない
-                        //    誤差の上限は「設定距離」と50mの小さい方(ただし最低15m)にする。
-                        //    例えば設定が20mなのに誤差が40mの位置で判定すると、実際は離れていても通知が鳴ってしまうため
-                        val maxAccuracy = minOf(ARRIVAL_MAX_ACCURACY_METERS, arrivalNotificationDistanceMeters.toFloat())
-                            .coerceAtLeast(15f)
-                        val isAccurateEnough = location.hasAccuracy() && location.accuracy <= maxAccuracy
-                        if (!hasNotifiedArrival && isAccurateEnough && rawDistanceMeters <= arrivalNotificationDistanceMeters) {
-                            hasNotifiedArrival = true
-                            vibrateOnArrivalNotification()
-                            showEndNavButton.value = true
-                        }
-                    } else {
-                        // 目的地未設定の場合は、距離表示を初期状態にしておく
-                        // ★変更:未設定時はnullに戻す
-                        distanceInMeters.value = null
-                    }
-                }
             }
-            // ★追加:位置情報が使える状態かどうかが変わったときに、システムから呼ばれる
-            override fun onLocationAvailability(availability: LocationAvailability) {
-                if (!availability.isLocationAvailable) {
-                    locationUnavailable.value = true
-                }
+            .addOnFailureListener { exception ->
+
+                // 登録失敗したので、
+                // 次回再試行できるようfalseへ戻す
+                isLocationUpdatesRunning = false
+
+                locationText.value =
+                    "エラー: ${exception.message}"
             }
+
+        val availability =
+            com.google.android.gms.common
+                .GoogleApiAvailability
+                .getInstance()
+
+        val resultCode =
+            availability
+                .isGooglePlayServicesAvailable(this)
+
+        if (
+            resultCode !=
+            com.google.android.gms.common
+                .ConnectionResult.SUCCESS
+        ) {
+            locationText.value =
+                "Google Play services利用不可: コード $resultCode"
+        }
+    }
+
+    private fun stopLocationUpdates() {
+
+        if (!isLocationUpdatesRunning) {
+            return
         }
 
-        // ★ここを修正:戻り値のTask(処理結果)を受け取って、成功/失敗をチェックする
-        fusedLocationClient.requestLocationUpdates(
-            locationRequest,
-            locationCallback,
-            mainLooper
-        ).addOnSuccessListener {
-            // リクエスト自体が正常に受け付けられた場合にここが呼ばれる
-            // (ただし、これは「受付成功」であって「位置情報を取得できた」ではない点に注意)
-            locationText.value = "位置情報のリクエスト成功。取得待ち..."
-        }.addOnFailureListener { exception ->
-            // ★ここが重要:何が原因で失敗しているかがexceptionに入っている
-            locationText.value = "エラー: ${exception.message}"
-        }
+        fusedLocationClient
+            .removeLocationUpdates(locationCallback)
 
-        // ★念のため、Google Play servicesが端末で使える状態かも確認する
-        val availability = com.google.android.gms.common.GoogleApiAvailability.getInstance()
-        val resultCode = availability.isGooglePlayServicesAvailable(this)
-        if (resultCode != com.google.android.gms.common.ConnectionResult.SUCCESS) {
-            // Google Play servicesが使えない/古い場合、ここでエラーコードが分かる
-            locationText.value = "Google Play services利用不可: コード $resultCode"
-        }
+        isLocationUpdatesRunning = false
     }
 }
 

@@ -407,6 +407,18 @@ fun SettingsScreen(
                     Text(text = "到着通知の距離")
                 }
             }
+            // ★追加
+            item {
+                ToggleRow(
+                    label = "到着通知",
+                    checked = currentSettings.arrivalNotificationEnabled,
+                    onCheckedChange = { newValue ->
+                        coroutineScope.launch {
+                            saveArrivalNotificationEnabled(context, newValue)
+                        }
+                    }
+                )
+            }
             item {
                 ArrivalDistanceRow(
                     currentDistance = currentSettings.arrivalNotificationDistance,

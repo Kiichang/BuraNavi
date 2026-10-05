@@ -27,7 +27,9 @@ data class AppSettings(
     // ★追加:到着(接近)通知を出す距離(メートル)
     val arrivalNotificationDistance: Int,
     // ★追加:Ambient Modeを使うかどうか
-    val ambientModeEnabled: Boolean
+    val ambientModeEnabled: Boolean,
+    // ★追加:到着通知自体を使うかどうか
+    val arrivalNotificationEnabled: Boolean
 ) {
     companion object {
         // ★追加:まだ一度も設定を保存していない(初回起動時)に使うデフォルト値
@@ -49,7 +51,8 @@ data class AppSettings(
             showHeartRate = false,
             kmDecimalPlaces = 1, // ★追加:デフォルトは小数点第1位まで
             arrivalNotificationDistance = 100, // ★追加:デフォルト100m
-            ambientModeEnabled = true // ★追加:デフォルトはON(今までの挙動のまま)
+            ambientModeEnabled = true, // ★追加:デフォルトはON(今までの挙動のまま)
+            arrivalNotificationEnabled = true // ★追加:デフォルトはON
         )
     }
 }
@@ -69,6 +72,12 @@ private object AppSettingsKeys {
     val KM_DECIMAL_PLACES = intPreferencesKey("km_decimal_places")
     val ARRIVAL_NOTIFICATION_DISTANCE = intPreferencesKey("arrival_notification_distance")
     val AMBIENT_MODE_ENABLED = booleanPreferencesKey("ambient_mode_enabled")
+    val ARRIVAL_NOTIFICATION_ENABLED = booleanPreferencesKey("arrival_notification_enabled")
+}
+
+// ★追加:ON/OFFを保存する関数
+suspend fun saveArrivalNotificationEnabled(context: Context, value: Boolean) {
+    context.dataStore.edit { it[AppSettingsKeys.ARRIVAL_NOTIFICATION_ENABLED] = value }
 }
 
 // ★追加:ON/OFFを保存する関数
@@ -149,7 +158,10 @@ fun observeAppSettings(context: Context): Flow<AppSettings> {
                 ?: AppSettings.DEFAULT.arrivalNotificationDistance,
             // ★追加
             ambientModeEnabled = preferences[AppSettingsKeys.AMBIENT_MODE_ENABLED]
-                ?: AppSettings.DEFAULT.ambientModeEnabled
+                ?: AppSettings.DEFAULT.ambientModeEnabled,
+            // ★追加
+            arrivalNotificationEnabled = preferences[AppSettingsKeys.ARRIVAL_NOTIFICATION_ENABLED]
+                ?: AppSettings.DEFAULT.arrivalNotificationEnabled
         )
     }
 }

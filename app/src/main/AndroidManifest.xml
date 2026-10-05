@@ -17,7 +17,14 @@
     <!-- ★追加:歩数センサーを使うための権限(Android 10以降で必須) -->
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
     <!-- ★追加:心拍センサーを使うための権限 -->
-    <uses-permission android:name="android.permission.BODY_SENSORS" />
+    <!-- Android 15以前向け -->
+    <uses-permission
+        android:name="android.permission.BODY_SENSORS"
+        android:maxSdkVersion="35" />
+
+    <!-- Android 16 / API 36以降向け -->
+    <uses-permission
+        android:name="android.permission.health.READ_HEART_RATE" />
 
     <!-- ★application タグは1個だけにする -->
     <application
