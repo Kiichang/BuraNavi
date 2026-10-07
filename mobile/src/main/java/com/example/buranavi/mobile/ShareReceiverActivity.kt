@@ -34,6 +34,9 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import androidx.lifecycle.lifecycleScope
+import android.net.Uri
+import android.content.pm.PackageManager
+import java.security.MessageDigest
 
 private const val TAG = "BuraNaviShare" // ★追加:このファイル専用のログタグ
 
@@ -56,7 +59,7 @@ class ShareReceiverActivity : ComponentActivity() {
 
         val toast = Toast.makeText(
             this,
-            "ウォッチへ送信しました",
+            "ウォッチへ同期します",
             Toast.LENGTH_SHORT
         )
 
@@ -161,6 +164,21 @@ class ShareReceiverActivity : ComponentActivity() {
         // 2回短く振動させることで「成功(1回)」と区別する
         val pattern = longArrayOf(0, 150, 100, 150) // 待機, 振動, 待機, 振動
         vibrator.vibrate(android.os.VibrationEffect.createWaveform(pattern, -1))
+    }
+
+    private fun showFailureAndFinish(
+        message: String
+    ) {
+
+        vibrateOnFailure()
+
+        Toast.makeText(
+            this,
+            message,
+            Toast.LENGTH_SHORT
+        ).show()
+
+        finish()
     }
 
     // ★追加:WebViewを使って、JavaScriptによるURL書き換え後の「座標入りURL」を取得する関数
@@ -485,10 +503,32 @@ class ShareReceiverActivity : ComponentActivity() {
                     "【失敗】WebView・Geocoding APIのいずれでも座標を取得できませんでした"
                 )
 
-                vibrateOnFailure()
-                finish()
+                showFailureAndFinish(
+                    "目的地を取得できませんでした"
+                )
             }
         }
+    }
+
+    private fun isGoogleShortUrl(
+        url: String
+    ): Boolean {
+
+        val host =
+            try {
+                Uri.parse(url).host
+            } catch (_: Exception) {
+                null
+            }
+
+        return host.equals(
+            "maps.app.goo.gl",
+            ignoreCase = true
+        ) ||
+                host.equals(
+                    "goo.gl",
+                    ignoreCase = true
+                )
     }
 
     // ★追加:今までextractCoordinatesAndProceedに書いていた抽出ロジックを、
@@ -523,7 +563,7 @@ class ShareReceiverActivity : ComponentActivity() {
             val apiDeferred = async(Dispatchers.IO) {
 
                 val resolvedUrl =
-                    if (matchedUrl.contains("goo.gl")) {
+                    if (isGoogleShortUrl(matchedUrl)) {
 
                         resolveRedirectUrl(matchedUrl)
                             ?: matchedUrl
@@ -656,13 +696,17 @@ class ShareReceiverActivity : ComponentActivity() {
 
         nodeClient.connectedNodes.addOnSuccessListener { nodes ->
             // ★追加:見つかったノードを記録
-            Log.e(TAG, "接続中ノード数: ${nodes.size}, ノード: ${nodes.joinToString { it.displayName }}")
+            Log.e(
+                TAG,
+                "検出ノード数: ${nodes.size}, ノード: ${nodes.joinToString { it.displayName }}"
+            )
 
             // ノードが見つからない場合
             if (nodes.isEmpty()) {
                 Log.e(TAG, "ノードが見つかりません")
-                vibrateOnFailure()
-                finish()
+                showFailureAndFinish(
+                    "ウォッチを確認できませんでした"
+                )
                 return@addOnSuccessListener
             }
 
@@ -684,15 +728,17 @@ class ShareReceiverActivity : ComponentActivity() {
                 // DataItem送信失敗
                 .addOnFailureListener { exception ->
                     Log.e(TAG, "DataItem送信失敗: ${exception.message}", exception)
-                    vibrateOnFailure()
-                    finish()
+                    showFailureAndFinish(
+                        "ウォッチへの送信に失敗しました"
+                    )
                 }
         }
         // ノード取得失敗
         .addOnFailureListener { exception ->
             Log.e(TAG, "ノード取得失敗: ${exception.message}", exception)
-            vibrateOnFailure()
-            finish()
+            showFailureAndFinish(
+                "ウォッチとの接続確認に失敗しました"
+            )
         }
     }
 
@@ -802,6 +848,72 @@ class ShareReceiverActivity : ComponentActivity() {
         )
     }
 
+    private val appSigningCertificateSha1: String? by lazy {
+        loadAppSigningCertificateSha1()
+    }
+
+    private fun loadAppSigningCertificateSha1(): String? {
+
+        return try {
+
+            val signatureBytes =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+
+                    val packageInfo =
+                        packageManager.getPackageInfo(
+                            packageName,
+                            PackageManager.GET_SIGNING_CERTIFICATES
+                        )
+
+                    val signingInfo =
+                        packageInfo.signingInfo
+                            ?: return null
+
+                    val signature =
+                        signingInfo.apkContentsSigners
+                            .firstOrNull()
+                            ?: return null
+
+                    signature.toByteArray()
+
+                } else {
+
+                    @Suppress("DEPRECATION")
+                    val packageInfo =
+                        packageManager.getPackageInfo(
+                            packageName,
+                            PackageManager.GET_SIGNATURES
+                        )
+
+                    @Suppress("DEPRECATION")
+                    val signature =
+                        packageInfo.signatures
+                            ?.firstOrNull()
+                            ?: return null
+
+                    signature.toByteArray()
+                }
+
+            val digest =
+                MessageDigest.getInstance("SHA-1")
+                    .digest(signatureBytes)
+
+            digest.joinToString("") { byte ->
+                "%02X".format(byte)
+            }
+
+        } catch (e: Exception) {
+
+            Log.e(
+                TAG,
+                "署名証明書SHA-1取得失敗: ${e.message}",
+                e
+            )
+
+            null
+        }
+    }
+
     private fun queryGeocodingApi(
         query: String
     ): Pair<Double, Double>? {
@@ -844,10 +956,13 @@ class ShareReceiverActivity : ComponentActivity() {
                 packageName
             )
 
-            connection.setRequestProperty(
-                "X-Android-Cert",
-                "FE54F26E6B03D1309B71075D6670167BE5841DA6"
-            )
+            appSigningCertificateSha1?.let { sha1 ->
+
+                connection.setRequestProperty(
+                    "X-Android-Cert",
+                    sha1
+                )
+            }
 
             connection.connect()
 
@@ -985,13 +1100,15 @@ class ShareReceiverActivity : ComponentActivity() {
                         if (redirectUrl != null) {
 
                             currentUrl =
-                                redirectUrl
-
+                                URL(
+                                    url,
+                                    redirectUrl
+                                ).toString()
                         } else {
 
                             if (
-                                !currentUrl.contains(
-                                    "goo.gl"
+                                !isGoogleShortUrl(
+                                    currentUrl
                                 )
                             ) {
 

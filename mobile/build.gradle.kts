@@ -20,7 +20,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.buranavi"
+        applicationId = "jp.buranavi.app"
         minSdk = 26
         targetSdk = 37
         versionCode = 1

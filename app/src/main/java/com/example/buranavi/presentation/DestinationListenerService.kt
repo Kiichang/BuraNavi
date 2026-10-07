@@ -13,38 +13,144 @@ import com.google.android.gms.wearable.WearableListenerService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 
 // WearableListenerService: スマホからのメッセージを裏側で待ち受け続けるサービス
 class DestinationListenerService : WearableListenerService() {
 
+    private val serviceScope =
+        CoroutineScope(
+            SupervisorJob() +
+                    Dispatchers.IO
+        )
+
     // ★追加:DataItemが変化した(新しく送られてきた)ときに自動的に呼ばれるメソッド
-    override fun onDataChanged(dataEvents: DataEventBuffer) {
+    override fun onDataChanged(
+        dataEvents: DataEventBuffer
+    ) {
         super.onDataChanged(dataEvents)
 
-        // Log.e("DestinationListener", "onDataChangedが呼ばれました。件数: ${dataEvents.count}")
-
-        // 複数のデータ変更が一度にまとめて届く可能性があるため、ループで処理する
         for (event in dataEvents) {
-            // TYPE_CHANGED: データが新規作成/更新されたことを示す(削除の場合はTYPE_DELETED)
-            if (event.type == DataEvent.TYPE_CHANGED && event.dataItem.uri.path == "/destination") {
-                // DataMapItem: 送られてきたDataItemの中身を取り出すためのクラス
-                val dataMap = DataMapItem.fromDataItem(event.dataItem).dataMap
-                val latitude = dataMap.getDouble("latitude")
-                val longitude = dataMap.getDouble("longitude")
 
-                Log.d("DestinationListener", "受信(DataItem): 緯度$latitude, 経度$longitude")
+            if (
+                event.type != DataEvent.TYPE_CHANGED ||
+                event.dataItem.uri.path != "/destination"
+            ) {
+                continue
+            }
 
-                // ★次のステップで、ここで受け取った値を実際に保存する処理を追加します
-                // ★追加:受け取った緯度経度をDataStoreに保存する
-                //    Serviceクラスにはライフサイクル(画面のような生存期間)がないため、
-                //    CoroutineScope(Dispatchers.IO)を自分で用意して、その中で保存処理を実行する
-                CoroutineScope(Dispatchers.IO).launch {
-                    saveDestination(applicationContext, latitude, longitude)
-                    Log.d("DestinationListener", "DataStoreへの保存が完了しました")
+            val dataMap =
+                DataMapItem
+                    .fromDataItem(event.dataItem)
+                    .dataMap
+
+            // 必須キーがすべて存在するか確認
+            if (
+                !dataMap.containsKey("latitude") ||
+                !dataMap.containsKey("longitude") ||
+                !dataMap.containsKey("timestamp")
+            ) {
+
+                Log.e(
+                    "DestinationListener",
+                    "目的地データに必要なキーがありません"
+                )
+
+                continue
+            }
+
+            val latitude =
+                dataMap.getDouble("latitude")
+
+            val longitude =
+                dataMap.getDouble("longitude")
+
+            val timestamp =
+                dataMap.getLong("timestamp")
+
+            // 数値として有効か確認
+            if (
+                !latitude.isFinite() ||
+                !longitude.isFinite()
+            ) {
+
+                Log.e(
+                    "DestinationListener",
+                    "緯度経度が有限値ではありません"
+                )
+
+                continue
+            }
+
+            // 緯度経度の範囲確認
+            if (
+                latitude !in -90.0..90.0 ||
+                longitude !in -180.0..180.0
+            ) {
+
+                Log.e(
+                    "DestinationListener",
+                    "緯度経度が範囲外です: $latitude, $longitude"
+                )
+
+                continue
+            }
+
+            // timestampの最低限の妥当性確認
+            if (timestamp <= 0L) {
+
+                Log.e(
+                    "DestinationListener",
+                    "timestampが不正です: $timestamp"
+                )
+
+                continue
+            }
+
+            Log.d(
+                "DestinationListener",
+                "受信(DataItem): 緯度=$latitude, 経度=$longitude, timestamp=$timestamp"
+            )
+
+            serviceScope.launch {
+
+                try {
+
+                    val saved =
+                        saveDestinationIfNewer(
+                            applicationContext,
+                            latitude,
+                            longitude,
+                            timestamp
+                        )
+
+                    if (saved) {
+
+                        Log.d(
+                            "DestinationListener",
+                            "DataStoreへの保存が完了しました"
+                        )
+
+                        // 保存成功後にだけ振動
+                        vibrateOnReceived()
+
+                    } else {
+
+                        Log.d(
+                            "DestinationListener",
+                            "古いまたは重複した目的地データなので無視しました"
+                        )
+                    }
+
+                } catch (e: Exception) {
+
+                    Log.e(
+                        "DestinationListener",
+                        "目的地保存に失敗しました",
+                        e
+                    )
                 }
-
-                // ★追加:正常に受信できたことをユーザーに伝えるため、ウォッチを振動させる
-                vibrateOnReceived()
             }
         }
     }
@@ -68,4 +174,12 @@ class DestinationListenerService : WearableListenerService() {
         val vibrationEffect = VibrationEffect.createOneShot(200, VibrationEffect.DEFAULT_AMPLITUDE)
         vibrator.vibrate(vibrationEffect)
     }
+
+    override fun onDestroy() {
+
+        serviceScope.cancel()
+
+        super.onDestroy()
+    }
+
 }

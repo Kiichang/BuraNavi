@@ -7,6 +7,9 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import androidx.datastore.preferences.core.emptyPreferences
+import kotlinx.coroutines.flow.catch
+import java.io.IOException
 
 // ★追加:アプリの見た目・表示設定をひとまとめにして扱うためのデータクラス
 //    dataクラス:値をまとめて持ち運ぶための入れ物(自動でequalsやtoStringが生成される)
@@ -57,6 +60,14 @@ data class AppSettings(
     }
 }
 
+private val validArrivalNotificationDistances =
+    setOf(
+        20,
+        50,
+        100,
+        200
+    )
+
 // ★追加:DataStoreの中で使うキーをまとめておく置き場所
 private object AppSettingsKeys {
     val BACKGROUND_COLOR = longPreferencesKey("background_color")
@@ -86,13 +97,51 @@ suspend fun saveAmbientModeEnabled(context: Context, value: Boolean) {
 }
 
 // ★追加:km表示の桁数を保存する関数
-suspend fun saveKmDecimalPlaces(context: Context, decimalPlaces: Int) {
-    context.dataStore.edit { it[AppSettingsKeys.KM_DECIMAL_PLACES] = decimalPlaces }
+suspend fun saveKmDecimalPlaces(
+    context: Context,
+    decimalPlaces: Int
+) {
+
+    val safeValue =
+        if (
+            decimalPlaces == 1 ||
+            decimalPlaces == 2
+        ) {
+            decimalPlaces
+        } else {
+            AppSettings.DEFAULT
+                .kmDecimalPlaces
+        }
+
+    context.dataStore.edit {
+        it[
+            AppSettingsKeys.KM_DECIMAL_PLACES
+        ] = safeValue
+    }
 }
 
 // ★追加:到着通知距離を保存する関数
-suspend fun saveArrivalNotificationDistance(context: Context, distanceMeters: Int) {
-    context.dataStore.edit { it[AppSettingsKeys.ARRIVAL_NOTIFICATION_DISTANCE] = distanceMeters }
+suspend fun saveArrivalNotificationDistance(
+    context: Context,
+    distanceMeters: Int
+) {
+
+    val safeValue =
+        if (
+            distanceMeters in
+            validArrivalNotificationDistances
+        ) {
+            distanceMeters
+        } else {
+            AppSettings.DEFAULT
+                .arrivalNotificationDistance
+        }
+
+    context.dataStore.edit {
+        it[
+            AppSettingsKeys.ARRIVAL_NOTIFICATION_DISTANCE
+        ] = safeValue
+    }
 }
 
 // ★追加:ON/OFFを保存する関数
@@ -115,8 +164,22 @@ suspend fun saveArrowColor(context: Context, colorValue: Long) {
     context.dataStore.edit { it[AppSettingsKeys.ARROW_COLOR] = colorValue }
 }
 
-suspend fun saveArrowStyle(context: Context, styleOrdinal: Int) {
-    context.dataStore.edit { it[AppSettingsKeys.ARROW_STYLE] = styleOrdinal }
+suspend fun saveArrowStyle(
+    context: Context,
+    styleOrdinal: Int
+) {
+
+    val safeValue =
+        styleOrdinal.coerceIn(
+            0,
+            ArrowStyle.values().lastIndex
+        )
+
+    context.dataStore.edit {
+        it[
+            AppSettingsKeys.ARROW_STYLE
+        ] = safeValue
+    }
 }
 
 suspend fun saveShowTime(context: Context, value: Boolean) {
@@ -136,8 +199,25 @@ suspend fun saveShowHeartRate(context: Context, value: Boolean) {
 }
 
 // ★追加:保存されているすべての設定を、まとめてリアルタイム監視する関数
-fun observeAppSettings(context: Context): Flow<AppSettings> {
-    return context.dataStore.data.map { preferences ->
+fun observeAppSettings(
+    context: Context
+): Flow<AppSettings> {
+
+    return context.dataStore.data
+        .catch { exception ->
+
+            if (exception is IOException) {
+
+                emit(
+                    emptyPreferences()
+                )
+
+            } else {
+
+                throw exception
+            }
+        }
+        .map { preferences ->
         AppSettings(
             backgroundColor = preferences[AppSettingsKeys.BACKGROUND_COLOR] ?: AppSettings.DEFAULT.backgroundColor,
             arrowColor = preferences[AppSettingsKeys.ARROW_COLOR] ?: AppSettings.DEFAULT.arrowColor,
@@ -146,16 +226,52 @@ fun observeAppSettings(context: Context): Flow<AppSettings> {
             // ★追加
             syncTextColorWithArrow = preferences[AppSettingsKeys.SYNC_TEXT_COLOR_WITH_ARROW]
                 ?: AppSettings.DEFAULT.syncTextColorWithArrow,
-            arrowStyle = preferences[AppSettingsKeys.ARROW_STYLE] ?: AppSettings.DEFAULT.arrowStyle,
+            arrowStyle =
+                (
+                    preferences[AppSettingsKeys.ARROW_STYLE]
+                        ?: AppSettings.DEFAULT.arrowStyle
+                ).coerceIn(
+                    0,
+                    ArrowStyle.values().lastIndex
+                ),
             showTime = preferences[AppSettingsKeys.SHOW_TIME] ?: AppSettings.DEFAULT.showTime,
             showBattery = preferences[AppSettingsKeys.SHOW_BATTERY] ?: AppSettings.DEFAULT.showBattery,
             showSteps = preferences[AppSettingsKeys.SHOW_STEPS] ?: AppSettings.DEFAULT.showSteps,
             showHeartRate = preferences[AppSettingsKeys.SHOW_HEART_RATE] ?: AppSettings.DEFAULT.showHeartRate,
             // ★追加
-            kmDecimalPlaces = preferences[AppSettingsKeys.KM_DECIMAL_PLACES] ?: AppSettings.DEFAULT.kmDecimalPlaces,
+            kmDecimalPlaces =
+                (
+                    preferences[
+                        AppSettingsKeys.KM_DECIMAL_PLACES
+                    ] ?: AppSettings.DEFAULT.kmDecimalPlaces
+                ).let {
+                    if (it == 1 || it == 2) {
+                        it
+                    } else {
+                        AppSettings.DEFAULT.kmDecimalPlaces
+                    }
+                },
             // ...(既存の項目はそのまま)
-            arrivalNotificationDistance = preferences[AppSettingsKeys.ARRIVAL_NOTIFICATION_DISTANCE]
-                ?: AppSettings.DEFAULT.arrivalNotificationDistance,
+            arrivalNotificationDistance =
+                (
+                        preferences[
+                            AppSettingsKeys.ARRIVAL_NOTIFICATION_DISTANCE
+                        ] ?: AppSettings.DEFAULT.arrivalNotificationDistance
+                        ).let { distance ->
+
+                        if (
+                            distance in
+                            validArrivalNotificationDistances
+                        ) {
+
+                            distance
+
+                        } else {
+
+                            AppSettings.DEFAULT
+                                .arrivalNotificationDistance
+                        }
+                    },
             // ★追加
             ambientModeEnabled = preferences[AppSettingsKeys.AMBIENT_MODE_ENABLED]
                 ?: AppSettings.DEFAULT.ambientModeEnabled,

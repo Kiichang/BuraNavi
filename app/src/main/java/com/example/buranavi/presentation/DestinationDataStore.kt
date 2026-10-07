@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import androidx.datastore.preferences.core.longPreferencesKey
 
 // ★重要:Context拡張プロパティとしてDataStoreを定義する(Androidの定番の書き方)
 //    "destination_settings" という名前のファイルが、アプリ内部に自動的に作られ、
@@ -18,16 +19,42 @@ object DestinationKeys {
     // doublePreferencesKey: Double型(緯度・経度のような小数)の値を保存するためのキーを作る関数
     val LATITUDE = doublePreferencesKey("destination_latitude")
     val LONGITUDE = doublePreferencesKey("destination_longitude")
+    val TIMESTAMP = longPreferencesKey("destination_timestamp")
 }
 
 // ★追加:目的地を保存する関数
 //    suspend fun = 「時間がかかる可能性がある処理」であることを示す(コルーチンの中でのみ呼び出せる)
-suspend fun saveDestination(context: Context, latitude: Double, longitude: Double) {
-    // context.dataStore.edit { }:DataStoreの中身を書き換えるためのブロック
+suspend fun saveDestinationIfNewer(
+    context: Context,
+    latitude: Double,
+    longitude: Double,
+    timestamp: Long
+): Boolean {
+
+    var saved = false
+
     context.dataStore.edit { preferences ->
-        preferences[DestinationKeys.LATITUDE] = latitude
-        preferences[DestinationKeys.LONGITUDE] = longitude
+
+        val currentTimestamp =
+            preferences[DestinationKeys.TIMESTAMP]
+                ?: Long.MIN_VALUE
+
+        if (timestamp > currentTimestamp) {
+
+            preferences[DestinationKeys.LATITUDE] =
+                latitude
+
+            preferences[DestinationKeys.LONGITUDE] =
+                longitude
+
+            preferences[DestinationKeys.TIMESTAMP] =
+                timestamp
+
+            saved = true
+        }
     }
+
+    return saved
 }
 
 // ★追加:保存されている目的地を「リアルタイムで監視できる形」で取得する関数
@@ -55,5 +82,6 @@ suspend fun clearDestination(context: Context) {
         //    自動的に「目的地未設定」の状態に戻る
         preferences.remove(DestinationKeys.LATITUDE)
         preferences.remove(DestinationKeys.LONGITUDE)
+        preferences.remove(DestinationKeys.TIMESTAMP)
     }
 }

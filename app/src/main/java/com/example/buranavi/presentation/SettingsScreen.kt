@@ -193,14 +193,10 @@ private val textColorOptions = listOf(
 fun SettingsScreen(
         currentSettings: AppSettings,
         onBack: () -> Unit,
-        // ★追加
         heartRatePermissionGranted: Boolean,
         onRequestHeartRatePermission: () -> Unit,
-        // ★追加
         stepsPermissionGranted: Boolean,
-        onRequestStepsPermission: () -> Unit,
-        // ★追加
-        onRestartApp: () -> Unit
+        onRequestStepsPermission: () -> Unit
     ) {
     // ★追加:設定変更(保存)は時間がかかる処理なので、コルーチンスコープを用意しておく
     //    rememberCoroutineScope():この画面が表示されている間、使い続けられるスコープを作る
@@ -491,20 +487,6 @@ fun SettingsScreen(
                         isConfirming = false
                     }
                 }
-            }
-
-            item {
-                ListHeader {
-                    Text(text = "アプリ")
-                }
-            }
-            item {
-                Chip(
-                    onClick = onRestartApp,
-                    label = { Text(text = "アプリを再起動") },
-                    colors = ChipDefaults.chipColors(backgroundColor = Color(0xFF333333)),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
-                )
             }
 
             // ★追加:リストの一番下にも「戻るボタン」を配置

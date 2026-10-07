@@ -10,7 +10,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.buranavi"
+        applicationId = "jp.buranavi.app"
         minSdk = 30
         targetSdk = 37
         versionCode = 1
@@ -40,7 +40,7 @@ dependencies {
     implementation(libs.activity.compose)
     implementation(libs.compose.foundation)
     implementation(libs.compose.material3)
-    implementation(libs.compose.ui.tooling)
+    debugImplementation(libs.compose.ui.tooling)
     implementation(libs.core.splashscreen)
     implementation(libs.play.services.wearable)
     implementation(libs.ui)
@@ -55,8 +55,6 @@ dependencies {
     implementation("com.google.android.gms:play-services-location:21.3.0")
     // Wear OS専用のCompose Materialライブラリ
     implementation("androidx.wear.compose:compose-material:1.4.0")
-    // Wear OS専用のCompose Foundationライブラリ(レイアウト系の基本部品)
-    implementation("androidx.wear.compose:compose-foundation:1.4.0")
     // ★追加:設定値やちょっとしたデータを保存しておくための仕組み(DataStore)
     implementation("androidx.datastore:datastore-preferences:1.1.1")
     // ★追加:歯車アイコンなど、Material Designの標準アイコンを使うためのライブラリ

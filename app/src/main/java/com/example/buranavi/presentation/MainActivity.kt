@@ -92,17 +92,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.core.app.ActivityCompat
-
-// ★追加:歩数(身体活動)の権限が今許可されているかどうか
-private val stepsPermissionGranted = mutableStateOf(false)
-// ★追加:設定画面でONにしようとして権限リクエストを出した、という状態を覚えておくフラグ
-private var pendingStepsToggleOn = false
-// ★追加:歩数の権限を一度でもリクエストしたことがあるか
-private var stepsPermissionRequestedOnce = false
-
-// ★追加:位置情報の権限が無い状態かどうか
-private val locationPermissionState =
-    mutableStateOf(LocationPermissionState.DENIED)
+import android.hardware.GeomagneticField
 
 private enum class LocationPermissionState {
     PRECISE,
@@ -110,71 +100,158 @@ private enum class LocationPermissionState {
     DENIED
 }
 
-// ★追加:心拍センサーの権限が今許可されているかどうか
-private val heartRatePermissionGranted = mutableStateOf(false)
-// ★追加:設定画面でONにしようとして権限リクエストを出した、という状態を覚えておくフラグ
-//    (権限が下りたときに、自動でshowHeartRateをtrueにするために使う)
-private var pendingHeartRateToggleOn = false
-// ★追加:心拍センサーの権限を一度でもリクエストしたことがあるか
-//    (「まだ聞いていない」のか「拒否されて聞けなくなった」のかを区別するために使う)
-private var heartRatePermissionRequestedOnce = false
-
-// ★追加:バッテリー残量を保持する状態
-private val batteryLevelText = mutableStateOf("-")
-
-// ★追加:バッテリー残量が変化するたびに呼ばれる受信機(レシーバー)
-private val batteryReceiver = object : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) {
-        // Intent(システムからの通知)の中から、現在の残量と満充電時の値を取り出す
-        val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
-        val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
-
-        if (level != -1 && scale != -1) {
-            // パーセンテージに変換(例:level=80, scale=100 → 80%)
-            val batteryPercent = (level * 100) / scale
-            batteryLevelText.value = "$batteryPercent%"
-        }
-    }
-}
-
-// 到着通知が現在「通知可能」な状態か
-private var arrivalNotificationArmed = true
-
-// 再通知解除距離以上だったGPS更新の連続回数
-private var rearmOutsideCount = 0
-
-// 到着距離判定の初回GPS位置を取得済みか
-private var arrivalRadiusInitialized = false
-
 // 通知距離から、再通知可能になるまでに追加で離れる距離
 private const val ARRIVAL_REARM_MARGIN_METERS = 30f
 
 // 再通知可能にするために必要な連続GPS取得回数
 private const val ARRIVAL_REARM_REQUIRED_COUNT = 2
 
-// ★追加:「ナビ終了」ボタンを表示するかどうか
-private val showEndNavButton = mutableStateOf(false)
-
-// ★追加:到着通知の距離(Composable側で毎回、設定値に更新される)
-private var arrivalNotificationDistanceMeters = 100
-// ★追加:到着通知自体を使うかどうか
-private var arrivalNotificationEnabled = true
-
 // ★追加:最後に位置情報が届いてから、この時間(ミリ秒)を超えたら「途絶」とみなす
 private const val GPS_STALE_THRESHOLD_MS = 15_000L
 // ★追加:接近通知を出してよい、位置情報の誤差(メートル)の上限
 private const val ARRIVAL_MAX_ACCURACY_METERS = 50f
 
-// ★追加:最後に位置情報が届いた時刻(端末起動からの経過ミリ秒)。0は「まだ一度も届いていない」
-private var lastFixElapsedMs = 0L
-// ★追加:GPSが途絶(または未取得)の状態かどうか。画面表示に使う
-private val isGpsStale = mutableStateOf(false)
-// ★追加:システムから「今は位置情報が使えない」と通知されたかどうか
-private val locationUnavailable = mutableStateOf(false)
-
 // ComponentActivity: Composeを使う画面のベースとなるクラス
 // ★変更点:SensorEventListenerを実装(=センサーの値変化を受け取れるようにする)
-class MainActivity : ComponentActivity(), SensorEventListener {
+class MainActivity :
+    ComponentActivity(),
+    SensorEventListener {
+
+    private val stepsPermissionGranted =
+        mutableStateOf(false)
+
+    private var pendingStepsToggleOn =
+        false
+
+    private var stepsPermissionRequestedOnce =
+        false
+
+    private val locationPermissionState =
+        mutableStateOf(
+            LocationPermissionState.DENIED
+        )
+
+    private val heartRatePermissionGranted =
+        mutableStateOf(false)
+
+    private var pendingHeartRateToggleOn =
+        false
+
+    private var heartRatePermissionRequestedOnce =
+        false
+
+    private val batteryLevelText =
+        mutableStateOf("-")
+
+    private var isBatteryReceiverRegistered =
+        false
+    private val batteryReceiver =
+        object : BroadcastReceiver() {
+
+            override fun onReceive(
+                context: Context,
+                intent: Intent
+            ) {
+
+                val level =
+                    intent.getIntExtra(
+                        BatteryManager.EXTRA_LEVEL,
+                        -1
+                    )
+
+                val scale =
+                    intent.getIntExtra(
+                        BatteryManager.EXTRA_SCALE,
+                        -1
+                    )
+
+                if (
+                    level != -1 &&
+                    scale != -1
+                ) {
+
+                    val batteryPercent =
+                        (level * 100) / scale
+
+                    batteryLevelText.value =
+                        "$batteryPercent%"
+                }
+            }
+        }
+
+    private fun registerBatteryReceiver() {
+
+        if (isBatteryReceiverRegistered) {
+            return
+        }
+
+        registerReceiver(
+            batteryReceiver,
+            IntentFilter(
+                Intent.ACTION_BATTERY_CHANGED
+            )
+        )
+
+        isBatteryReceiverRegistered =
+            true
+    }
+
+    private fun unregisterBatteryReceiver() {
+
+        if (!isBatteryReceiverRegistered) {
+            return
+        }
+
+        try {
+
+            unregisterReceiver(
+                batteryReceiver
+            )
+
+        } catch (e: IllegalArgumentException) {
+
+            Log.w(
+                "BuraNavi",
+                "batteryReceiverは既に解除されています",
+                e
+            )
+
+        } finally {
+
+            isBatteryReceiverRegistered =
+                false
+        }
+    }
+
+    private var arrivalNotificationArmed =
+        true
+
+    private var rearmOutsideCount =
+        0
+
+    private var arrivalRadiusInitialized =
+        false
+
+    private val showEndNavButton =
+        mutableStateOf(false)
+
+    private var arrivalNotificationDistanceMeters =
+        100
+
+    private var arrivalNotificationEnabled =
+        true
+
+    private var lastFixElapsedMs =
+        0L
+
+    private val isGpsStale =
+        mutableStateOf(false)
+
+    private val locationUnavailable =
+        mutableStateOf(false)
+
+    private val playServicesUnavailable =
+        mutableStateOf(false)
 
     // ★追加:到着通知用の振動(座標受信時とは違うパターンにして区別する)
     private fun vibrateOnArrivalNotification() {
@@ -213,6 +290,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     // ★追加:歩数・心拍数を保持するセンサー変数
     private var heartRateSensor: Sensor? = null
+
+    private var showHeartRateEnabled = false
+    private var showStepsEnabled = false
 
     // ★追加:画面表示用の状態(取得できるまでは "-" と表示しておく)
     private val stepsText = mutableStateOf("-")
@@ -305,11 +385,35 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
     }
 
+    private fun unregisterDailySteps() {
+        try {
+            passiveMonitoringClient
+                .clearPassiveListenerCallbackAsync()
+        } catch (e: Exception) {
+            Log.e(
+                "HealthServices",
+                "歩数取得の解除に失敗",
+                e
+            )
+        }
+    }
+
     // ★追加:心拍センサーを取得して登録する関数
     private fun registerHeartRateSensor() {
         heartRateSensor = sensorManager.getDefaultSensor(Sensor.TYPE_HEART_RATE)
         heartRateSensor?.also { sensor ->
             sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL)
+        }
+    }
+
+    private fun unregisterHeartRateSensor() {
+
+        heartRateSensor?.let { sensor ->
+
+            sensorManager.unregisterListener(
+                this,
+                sensor
+            )
         }
     }
 
@@ -367,14 +471,18 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 stepsPermissionGranted.value = activityRecognitionGranted
 
                 if (activityRecognitionGranted) {
-                    registerDailySteps()
-                    // ★追加:設定画面でONにしようとした操作の続きとして、表示設定も自動でONにする
+
                     if (pendingStepsToggleOn) {
+
                         lifecycleScope.launch {
-                            saveShowSteps(applicationContext, true)
+                            saveShowSteps(
+                                applicationContext,
+                                true
+                            )
                         }
                     }
                 }
+
                 pendingStepsToggleOn = false
             }
 
@@ -391,10 +499,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
                 if (granted) {
 
-                    registerHeartRateSensor()
-
                     if (pendingHeartRateToggleOn) {
+
                         lifecycleScope.launch {
+
                             saveShowHeartRate(
                                 applicationContext,
                                 true
@@ -420,8 +528,22 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     // ★変更:bearingTextは矢印の角度計算に使うので、Float型の状態として持っておく
     //    (画面表示用の文字列は別途Text側で丸めて使う)
-    private var targetBearing by mutableFloatStateOf(0f) // 目的地への方位角(真北基準)
-    private var currentAzimuth by mutableFloatStateOf(0f) // ウォッチ自身が向いている方位角(真北基準)
+    // 目的地への方位角(真北基準)
+    private var targetBearing by
+    mutableFloatStateOf(0f)
+
+    // ウォッチ自身が向いている方位角（真北基準・磁気偏角補正後）
+    private var currentAzimuth by
+    mutableFloatStateOf(0f)
+
+    // 現在地における磁気偏角。
+    // 磁北基準のセンサー方位を真北基準へ補正するために使用。
+    private var magneticDeclination =
+        0f
+
+    // 有効な方位センサー値を取得できているか
+    private val isHeadingAvailable =
+        mutableStateOf(false)
 
     // ★追加:目的地の緯度・経度(今は固定値でテスト。例として東京タワーの座標を設定)
     //    実際に使う際は、自分が試したい場所の緯度経度に書き換えて試してください
@@ -454,7 +576,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         // ★追加:端末に搭載されている「回転ベクトルセンサー」を取得
         //    (機種によっては存在しない場合もあるので、nullの可能性を考慮した型になっている)
-        rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+        rotationVectorSensor =
+            sensorManager.getDefaultSensor(
+                Sensor.TYPE_ROTATION_VECTOR
+            )
+
+        if (rotationVectorSensor == null) {
+            isHeadingAvailable.value = false
+        }
 
         // ⑦ Composeで画面のUIを組み立てる部分
         setContent {
@@ -500,15 +629,61 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             //    initial = null: まだ最初の値が届く前は、nullとして扱う
             // ★変更:上で作ったFlowを使う
             val destinationFromStore by destinationFlow.collectAsState(initial = null)
-            val appSettings by appSettingsFlow.collectAsState(initial = AppSettings.DEFAULT)
+            val appSettings by appSettingsFlow.collectAsState(
+                initial = AppSettings.DEFAULT
+            )
+
+            LaunchedEffect(
+                appSettings.showHeartRate
+            ) {
+
+                showHeartRateEnabled =
+                    appSettings.showHeartRate
+
+                if (
+                    showHeartRateEnabled &&
+                    heartRatePermissionGranted.value
+                ) {
+
+                    registerHeartRateSensor()
+
+                } else {
+
+                    unregisterHeartRateSensor()
+                }
+            }
+
+            LaunchedEffect(
+                appSettings.showSteps
+            ) {
+
+                showStepsEnabled =
+                    appSettings.showSteps
+
+                if (
+                    showStepsEnabled &&
+                    stepsPermissionGranted.value
+                ) {
+
+                    registerDailySteps()
+
+                } else {
+
+                    unregisterDailySteps()
+                }
+            }
 
             // ★追加:Flowから新しい値が届くたびに、currentDestinationを更新する
-            //    (LaunchedEffectを使うのが一般的だが、まずはシンプルにこの形で進める)
-            currentDestination = destinationFromStore
+            LaunchedEffect(
+                destinationFromStore
+            ) {
+                currentDestination =
+                    destinationFromStore
+            }
 
             // ★追加:保存されている見た目の設定を監視する
-//            val appSettings by observeAppSettings(applicationContext)
-//                .collectAsState(initial = AppSettings.DEFAULT)
+            //     val appSettings by observeAppSettings(applicationContext)
+            //     .collectAsState(initial = AppSettings.DEFAULT)
 
             // ★追加:設定が変わるたびに、画面の常時点灯フラグを切り替える
             //    ON(Ambient使用):フラグを外す → システムのAmbient機能に任せる
@@ -521,10 +696,17 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 }
             }
 
-            // ★追加:設定値を、位置情報コールバック側からも参照できるクラスのプロパティに反映
-            arrivalNotificationDistanceMeters = appSettings.arrivalNotificationDistance
-            // ★追加
-            arrivalNotificationEnabled = appSettings.arrivalNotificationEnabled
+            LaunchedEffect(
+                appSettings.arrivalNotificationDistance,
+                appSettings.arrivalNotificationEnabled
+            ) {
+
+                arrivalNotificationDistanceMeters =
+                    appSettings.arrivalNotificationDistance
+
+                arrivalNotificationEnabled =
+                    appSettings.arrivalNotificationEnabled
+            }
 
             // ★追加:目的地が変わる(新しく設定される/リセットされる)たびに、通知状態をリセットする
             LaunchedEffect(
@@ -556,19 +738,20 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     if (showSettingsScreen) {
                         // ★追加:設定画面(中身は次のステップで作り込みます。今は仮の内容)
                         SettingsScreen(
-                            currentSettings = appSettings, // ★追加:現在の設定値を渡す
+                            currentSettings = appSettings,
                             onBack = {
-                                // 「戻る」が押されたら、メイン画面表示に戻す
                                 showSettingsScreen = false
                             },
-                            // ★追加
-                            heartRatePermissionGranted = heartRatePermissionGranted.value,
-                            onRequestHeartRatePermission = { requestHeartRatePermission() },
-                            // ★追加
-                            stepsPermissionGranted = stepsPermissionGranted.value,
-                            onRequestStepsPermission = { requestStepsPermission() },
-                            // ★追加:再起動ボタンから呼ばれる処理
-                            onRestartApp = { recreate() }
+                            heartRatePermissionGranted =
+                                heartRatePermissionGranted.value,
+                            onRequestHeartRatePermission = {
+                                requestHeartRatePermission()
+                            },
+                            stepsPermissionGranted =
+                                stepsPermissionGranted.value,
+                            onRequestStepsPermission = {
+                                requestStepsPermission()
+                            }
                         )
                     } else {
                         // ★追加:歯車アイコンをタップから3秒後に自動的に隠す処理
@@ -598,7 +781,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             // ★追加:GPSが途絶しているかどうか(矢印・距離の表示で使う)
                             val gpsStale = isGpsStale.value
                             // ★変更:currentDestinationがある時だけ矢印を描画する
-                            if (currentDestination != null) {
+                            if (
+                                currentDestination != null &&
+                                isHeadingAvailable.value
+                            ) {
                                 // ★変更:矢印を画面のちょうど中央に固定配置
                                 //    Modifier.align(Alignment.Center):この要素だけを親(Box)の中央に置く指定
                                 Canvas(
@@ -606,16 +792,44 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                         .size(80.dp)
                                         .align(Alignment.Center)
                                 ) {
-                                    val arrowRotation = targetBearing - currentAzimuth
-                                    rotate(degrees = arrowRotation) {
-                                        // ★変更:Ambient中は専用のシンプルな矢印(白の線)、通常時は今まで通りの設定を反映
+
+                                    val arrowRotation =
+                                        targetBearing -
+                                        currentAzimuth
+
+                                    rotate(
+                                        degrees = arrowRotation
+                                    ) {
+
                                         if (isAmbient) {
-                                            // ★変更:途絶中はグレーにする
-                                            drawAmbientArrowShape(color = if (gpsStale) Color.Gray else Color.White)
+
+                                            drawAmbientArrowShape(
+                                                color =
+                                                    if (gpsStale) {
+                                                        Color.Gray
+                                                    } else {
+                                                        Color.White
+                                                    }
+                                            )
+
                                         } else {
+
                                             drawArrowShape(
-                                                style = ArrowStyle.values()[appSettings.arrowStyle],
-                                                color = if (gpsStale) Color.Gray else Color(appSettings.arrowColor)
+                                                style =
+                                                    ArrowStyle.values()
+                                                        .getOrElse(
+                                                            appSettings.arrowStyle
+                                                        ) {
+                                                            ArrowStyle.values().first()
+                                                        },
+                                                color =
+                                                    if (gpsStale) {
+                                                        Color.Gray
+                                                    } else {
+                                                        Color(
+                                                            appSettings.arrowColor
+                                                        )
+                                                    }
                                             )
                                         }
                                     }
@@ -647,7 +861,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                     LocationPermissionState.DENIED -> {
                                         Text(
                                             text = "位置情報の\n権限がありません",
-                                            color = Color.Red,
+                                            color =
+                                                if (isAmbient) {
+                                                    Color.White
+                                                } else {
+                                                    Color.Red
+                                                },
                                             textAlign = TextAlign.Center
                                         )
                                     }
@@ -655,7 +874,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                     LocationPermissionState.APPROXIMATE -> {
                                         Text(
                                             text = "正確な位置情報を\n許可してください",
-                                            color = Color.Yellow,
+                                            color =
+                                                if (isAmbient) {
+                                                    Color.White
+                                                } else {
+                                                    Color.Yellow
+                                                },
                                             textAlign = TextAlign.Center
                                         )
                                     }
@@ -666,7 +890,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
                                             Text(
                                                 text = "目的地未設定",
-                                                color = Color.Yellow
+                                                color =
+                                                    if (isAmbient) {
+                                                        Color.White
+                                                    } else {
+                                                        Color.Yellow
+                                                    }
                                             )
 
                                         } else {
@@ -728,10 +957,27 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                             }
                                             // ★追加:GPSが途絶(または未取得)のとき、距離の下に案内を表示する
                                             if (gpsStale) {
+
                                                 Text(
-                                                    text = "GPS待機中",
-                                                    color = Color.Yellow,
-                                                    fontSize = 11.sp
+                                                    text =
+                                                        when {
+                                                            playServicesUnavailable.value ->
+                                                                "Google Play servicesを利用できません"
+
+                                                            locationUnavailable.value ->
+                                                                "GPSを利用できません"
+
+                                                            else ->
+                                                                "GPS待機中"
+                                                        },
+                                                    color =
+                                                        if (isAmbient) {
+                                                            Color.White
+                                                        } else {
+                                                            Color.Yellow
+                                                        },
+                                                    fontSize = 11.sp,
+                                                    textAlign = TextAlign.Center
                                                 )
                                             }
                                         }
@@ -924,15 +1170,47 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         val heartRatePermission =
             getHeartRatePermission()
 
-        heartRatePermissionGranted.value =
+        val heartRateGranted =
             ContextCompat.checkSelfPermission(
                 this,
                 heartRatePermission
             ) == PackageManager.PERMISSION_GRANTED
 
-        stepsPermissionGranted.value = ContextCompat.checkSelfPermission(
-            this, Manifest.permission.ACTIVITY_RECOGNITION
-        ) == PackageManager.PERMISSION_GRANTED
+        heartRatePermissionGranted.value =
+            heartRateGranted
+
+        if (
+            heartRateGranted &&
+            showHeartRateEnabled
+        ) {
+
+            registerHeartRateSensor()
+
+        } else {
+
+            unregisterHeartRateSensor()
+        }
+
+        val stepsGranted =
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ACTIVITY_RECOGNITION
+            ) == PackageManager.PERMISSION_GRANTED
+
+        stepsPermissionGranted.value =
+            stepsGranted
+
+        if (
+            stepsGranted &&
+            showStepsEnabled
+        ) {
+
+            registerDailySteps()
+
+        } else {
+
+            unregisterDailySteps()
+        }
 
         locationPermissionState.value =
             getLocationPermissionState()
@@ -954,17 +1232,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             // SENSOR_DELAY_UI: UI表示用に適した更新頻度(頻繁すぎずカクつかない程度)
             sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_UI)
         }
-        // ★追加:既に許可されている場合のみ、歩数・心拍センサーも再登録する
-        // stepCounterSensor?.also { sensor ->
-        //     sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL)
-        // }
-        heartRateSensor?.also { sensor ->
-            sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL)
-        }
-        // ★追加:バッテリー情報の受信登録
-        //    IntentFilter(Intent.ACTION_BATTERY_CHANGED):
-        //    「バッテリー残量が変化した」というシステムからの通知だけを受け取る、という絞り込み条件
-        registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+
+        registerBatteryReceiver()
     }
 
     // ★追加:設定画面から呼ばれる、心拍数の権限をリクエストする関数
@@ -1041,16 +1310,19 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     // ★追加:画面から離れたらセンサーの購読を止める(バッテリー節約)
     override fun onPause() {
         super.onPause()
+
         sensorManager.unregisterListener(this)
-        // ★追加:バッテリー受信の解除
-        unregisterReceiver(batteryReceiver)
+
+        unregisterDailySteps()
+
+        unregisterBatteryReceiver()
     }
 
     override fun onDestroy() {
 
-        // Activityが破棄される際、
-        // GPS購読を必ず解除する
         stopLocationUpdates()
+
+        unregisterBatteryReceiver()
 
         super.onDestroy()
     }
@@ -1074,12 +1346,26 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 val orientationAngles = FloatArray(3)
                 SensorManager.getOrientation(rotationMatrix, orientationAngles)
 
-                // 計算結果は「ラジアン」という単位で返ってくるので、見慣れた「度」に変換する
-                val azimuthInRadians = orientationAngles[0]
-                val azimuthInDegrees = Math.toDegrees(azimuthInRadians.toDouble()).toFloat()
+                val azimuthInRadians =
+                    orientationAngles[0]
 
-                // 度の値は-180〜180の範囲で返ってくるので、0〜360度に変換して保持
-                currentAzimuth = (azimuthInDegrees + 360) % 360
+                val magneticAzimuth =
+                    Math.toDegrees(
+                        azimuthInRadians.toDouble()
+                    ).toFloat()
+
+                // 回転ベクトルセンサーの磁北基準方位を
+                // 現在地の磁気偏角で補正し、真北基準へ変換する
+                currentAzimuth =
+                    (
+                        magneticAzimuth +
+                        magneticDeclination +
+                        360f
+                    ) % 360f
+
+                isHeadingAvailable.value =
+                    event.accuracy !=
+                            SensorManager.SENSOR_STATUS_UNRELIABLE
             }
             // ★追加:心拍センサーの処理
             Sensor.TYPE_HEART_RATE -> {
@@ -1094,9 +1380,20 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     }
 
     // ★追加:SensorEventListenerを実装したことで必須になるメソッド②
-    //    センサー自体の精度が変化したときに呼ばれる(今回は特に処理不要なので空のままでOK)
-    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
-        // 今回は使わないが、実装しないとコンパイルエラーになるため空実装として残す
+    override fun onAccuracyChanged(
+        sensor: Sensor?,
+        accuracy: Int
+    ) {
+
+        if (
+            sensor?.type ==
+            Sensor.TYPE_ROTATION_VECTOR
+        ) {
+
+            isHeadingAvailable.value =
+                accuracy !=
+                    SensorManager.SENSOR_STATUS_UNRELIABLE
+        }
     }
 
     private fun getLocationPermissionState(): LocationPermissionState {
@@ -1163,14 +1460,6 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             startLocationUpdates()
         }
 
-        if (activityRecognitionGranted) {
-            registerDailySteps() // ★修正:registerStepCounterSensor() → registerDailySteps()
-        }
-
-        if (heartRateGranted) {
-            registerHeartRateSensor()
-        }
-
         // ★変更:足りない権限だけをリストアップするのは変更なし
         val permissionsToRequest = mutableListOf<String>()
 
@@ -1217,14 +1506,61 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         override fun onLocationResult(result: LocationResult) {
             // 最新の位置情報を1件取り出す
             val location = result.lastLocation
+
             if (location != null) {
-                // ★追加:位置が届いた時刻を記録し、途絶状態を解除する
-                lastFixElapsedMs = SystemClock.elapsedRealtime()
-                locationUnavailable.value = false
-                isGpsStale.value = false
+
+                // 位置情報を受信した「今」ではなく、
+                // Locationサンプル自体が取得された時刻を使用する
+                val nowElapsedMs =
+                    SystemClock.elapsedRealtime()
+
+                val sampleElapsedMs =
+                    location.elapsedRealtimeNanos /
+                            1_000_000L
+
+                // 通常は必ず有効だが、万一0の場合は従来どおり現在時刻へフォールバックする
+                val effectiveFixElapsedMs =
+                    if (sampleElapsedMs > 0L) {
+                        sampleElapsedMs
+                    } else {
+                        nowElapsedMs
+                    }
+
+                val sampleAgeMs =
+                    (nowElapsedMs - effectiveFixElapsedMs)
+                        .coerceAtLeast(0L)
+
+                val isSampleFresh =
+                    sampleAgeMs <=
+                            GPS_STALE_THRESHOLD_MS
+
+                lastFixElapsedMs =
+                    effectiveFixElapsedMs
+
+                locationUnavailable.value =
+                    false
+
+                isGpsStale.value =
+                    !isSampleFresh
+
                 // 緯度(latitude)と経度(longitude)を文字列にして画面表示用の変数に代入
                 locationText.value =
                     "緯度: ${location.latitude}\n経度: ${location.longitude}"
+
+                val geomagneticField =
+                    GeomagneticField(
+                        location.latitude.toFloat(),
+                        location.longitude.toFloat(),
+                        if (location.hasAltitude()) {
+                            location.altitude.toFloat()
+                        } else {
+                            0f
+                        },
+                        System.currentTimeMillis()
+                    )
+
+                magneticDeclination =
+                    geomagneticField.declination
 
                 // ★ここから追加:目的地との距離・方位角を計算する処理
                 // ★変更:目的地が設定されている場合のみ、距離・方位を計算する
@@ -1288,18 +1624,35 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         rawDistanceMeters >= rearmDistance
 
                     if (!arrivalRadiusInitialized) {
-                        // 初回GPS位置は基準として記録するだけ。
-                        // 最初から通知距離以内にいる場合は、その場では通知しない。
-                        arrivalNotificationArmed = !isInsideArrivalRadius
-                        rearmOutsideCount = 0
-                        arrivalRadiusInitialized = true
+
+                        // 初回基準には、
+                        // 十分な精度と鮮度を持つ位置情報だけを使用する
+                        if (
+                            isAccurateEnough &&
+                            isSampleFresh
+                        ) {
+
+                            // 最初から通知距離以内にいる場合は、
+                            // その場では通知しない
+                            arrivalNotificationArmed =
+                                !isInsideArrivalRadius
+
+                            rearmOutsideCount =
+                                0
+
+                            arrivalRadiusInitialized =
+                                true
+                        }
+
                     } else {
+
                         if (arrivalNotificationArmed) {
                             // 通知可能状態:
                             // 設定距離以内に入ったら通知
                             if (
                                 arrivalNotificationEnabled &&
                                 isAccurateEnough &&
+                                isSampleFresh &&
                                 isInsideArrivalRadius
                             ) {
                                 vibrateOnArrivalNotification()
@@ -1314,6 +1667,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             // 2回連続で確認したら再通知可能にする
                             if (
                                 isAccurateEnough &&
+                                isSampleFresh &&
                                 isOutsideRearmRadius
                             ) {
                                 rearmOutsideCount++
@@ -1405,8 +1759,17 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             com.google.android.gms.common
                 .ConnectionResult.SUCCESS
         ) {
+
+            playServicesUnavailable.value =
+                true
+
             locationText.value =
                 "Google Play services利用不可: コード $resultCode"
+
+        } else {
+
+            playServicesUnavailable.value =
+                false
         }
     }
 
