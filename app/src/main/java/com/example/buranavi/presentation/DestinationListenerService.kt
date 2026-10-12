@@ -5,7 +5,6 @@ import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
-import android.util.Log
 import com.google.android.gms.wearable.DataEvent
 import com.google.android.gms.wearable.DataEventBuffer
 import com.google.android.gms.wearable.DataMapItem
@@ -52,11 +51,6 @@ class DestinationListenerService : WearableListenerService() {
                 !dataMap.containsKey("timestamp")
             ) {
 
-                Log.e(
-                    "DestinationListener",
-                    "目的地データに必要なキーがありません"
-                )
-
                 continue
             }
 
@@ -75,11 +69,6 @@ class DestinationListenerService : WearableListenerService() {
                 !longitude.isFinite()
             ) {
 
-                Log.e(
-                    "DestinationListener",
-                    "緯度経度が有限値ではありません"
-                )
-
                 continue
             }
 
@@ -89,29 +78,14 @@ class DestinationListenerService : WearableListenerService() {
                 longitude !in -180.0..180.0
             ) {
 
-                Log.e(
-                    "DestinationListener",
-                    "緯度経度が範囲外です: $latitude, $longitude"
-                )
-
                 continue
             }
 
             // timestampの最低限の妥当性確認
             if (timestamp <= 0L) {
 
-                Log.e(
-                    "DestinationListener",
-                    "timestampが不正です: $timestamp"
-                )
-
                 continue
             }
-
-            Log.d(
-                "DestinationListener",
-                "受信(DataItem): 緯度=$latitude, 経度=$longitude, timestamp=$timestamp"
-            )
 
             serviceScope.launch {
 
@@ -127,29 +101,13 @@ class DestinationListenerService : WearableListenerService() {
 
                     if (saved) {
 
-                        Log.d(
-                            "DestinationListener",
-                            "DataStoreへの保存が完了しました"
-                        )
-
                         // 保存成功後にだけ振動
                         vibrateOnReceived()
 
-                    } else {
-
-                        Log.d(
-                            "DestinationListener",
-                            "古いまたは重複した目的地データなので無視しました"
-                        )
                     }
 
-                } catch (e: Exception) {
+                } catch (_: Exception) {
 
-                    Log.e(
-                        "DestinationListener",
-                        "目的地保存に失敗しました",
-                        e
-                    )
                 }
             }
         }

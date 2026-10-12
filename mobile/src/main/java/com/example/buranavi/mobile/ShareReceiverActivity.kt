@@ -1,10 +1,7 @@
 package com.example.buranavi.mobile
 
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Intent
 import android.os.Bundle
-import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import com.google.android.gms.wearable.PutDataMapRequest
@@ -12,13 +9,11 @@ import com.google.android.gms.wearable.Wearable
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import org.json.JSONArray
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLDecoder
 import java.net.URLEncoder
 // ★追加:タイムアウト機能を使うために必要
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import java.net.CookieManager
@@ -37,8 +32,6 @@ import androidx.lifecycle.lifecycleScope
 import android.net.Uri
 import android.content.pm.PackageManager
 import java.security.MessageDigest
-
-private const val TAG = "BuraNaviShare" // ★追加:このファイル専用のログタグ
 
 // 座標の取得手段を表す区分
 enum class LocationSource {
@@ -65,9 +58,6 @@ class ShareReceiverActivity : ComponentActivity() {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             toast.addCallback(object : Toast.Callback() {
-                override fun onToastShown() {
-                    Log.d(TAG, "成功Toast表示開始")
-                }
 
                 override fun onToastHidden() {
                     handler.removeCallbacks(finishTask)
@@ -124,10 +114,7 @@ class ShareReceiverActivity : ComponentActivity() {
             try {
                 connection.disconnect()
             } catch (e: Exception) {
-                Log.w(
-                    TAG,
-                    "通信切断時の例外: ${e.message}"
-                )
+
             }
         }
     }
@@ -137,23 +124,15 @@ class ShareReceiverActivity : ComponentActivity() {
 
         val receivedIntent = intent
 
-        // ★追加:受信したIntentの中身(action, type)をまず記録
-        Log.e(TAG, "onCreate開始 action=${receivedIntent?.action} type=${receivedIntent?.type}")
-
         if (receivedIntent?.action == Intent.ACTION_SEND && receivedIntent.type == "text/plain") {
             val sharedText = receivedIntent.getStringExtra(Intent.EXTRA_TEXT)
-
-            // ★追加:共有された生テキストをそのままログに残す(ここが今回一番重要)
-            Log.e(TAG, "共有された生テキスト: $sharedText")
 
             if (sharedText != null) {
                 extractCoordinatesAndProceed(sharedText)
             } else {
-                Log.e(TAG, "共有テキストがnullでした")
                 finish()
             }
         } else {
-            Log.e(TAG, "対応していないIntentでした")
             finish()
         }
     }
@@ -273,11 +252,6 @@ class ShareReceiverActivity : ComponentActivity() {
                                 val (lat, lng) =
                                     coordinates
 
-                                Log.e(
-                                    TAG,
-                                    "WebView経由で座標検出成功: $lat, $lng"
-                                )
-
                                 finishWebViewResolve(
                                     Pair(lat, lng)
                                 )
@@ -308,11 +282,6 @@ class ShareReceiverActivity : ComponentActivity() {
 
                     if (!isResolved) {
 
-                        Log.e(
-                            TAG,
-                            "WebView経由の解決がタイムアウト"
-                        )
-
                         finishWebViewResolve(
                             null
                         )
@@ -329,11 +298,6 @@ class ShareReceiverActivity : ComponentActivity() {
                         super.onPageFinished(
                             view,
                             finishedUrl
-                        )
-
-                        Log.e(
-                            TAG,
-                            "WebViewページ読込中: $finishedUrl"
                         )
 
                         if (!isResolved) {
@@ -408,10 +372,6 @@ class ShareReceiverActivity : ComponentActivity() {
 
         } catch (e: Exception) {
 
-            Log.e(
-                TAG,
-                "WebView破棄時の例外: ${e.message}"
-            )
         }
     }
 
@@ -444,11 +404,6 @@ class ShareReceiverActivity : ComponentActivity() {
                     e: Exception
                 ) {
 
-                    Log.e(
-                        TAG,
-                        "強制切断または例外により中断: ${e.message}"
-                    )
-
                     null
 
                 } finally {
@@ -458,38 +413,9 @@ class ShareReceiverActivity : ComponentActivity() {
 
             if (result != null) {
 
-                val (coordinates, source) =
-                    result
+                val coordinates = result.first
 
-                val (lat, lng) =
-                    coordinates
-
-                when (source) {
-
-                    LocationSource.URL -> {
-
-                        Log.e(
-                            TAG,
-                            "【成功】URLから直接座標を取得しました: $lat, $lng"
-                        )
-                    }
-
-                    LocationSource.WEB_VIEW -> {
-
-                        Log.e(
-                            TAG,
-                            "【成功】WebView経由で座標を取得しました: $lat, $lng"
-                        )
-                    }
-
-                    LocationSource.GEOCODING_API -> {
-
-                        Log.e(
-                            TAG,
-                            "【成功】Geocoding API経由で座標を取得しました: $lat, $lng"
-                        )
-                    }
-                }
+                val (lat, lng) = coordinates
 
                 sendDestinationToWatch(
                     lat,
@@ -497,11 +423,6 @@ class ShareReceiverActivity : ComponentActivity() {
                 )
 
             } else {
-
-                Log.e(
-                    TAG,
-                    "【失敗】WebView・Geocoding APIのいずれでも座標を取得できませんでした"
-                )
 
                 showFailureAndFinish(
                     "目的地を取得できませんでした"
@@ -624,11 +545,6 @@ class ShareReceiverActivity : ComponentActivity() {
 
                     if (apiResult != null) {
 
-                        Log.e(
-                            TAG,
-                            "API側処理が最速完了"
-                        )
-
                         webViewDeferred.cancel()
 
                         apiResult
@@ -643,11 +559,6 @@ class ShareReceiverActivity : ComponentActivity() {
                 webViewDeferred.onAwait { webViewResult ->
 
                     if (webViewResult != null) {
-
-                        Log.e(
-                            TAG,
-                            "WebView側が最速完了"
-                        )
 
                         apiDeferred.cancel()
 
@@ -695,15 +606,9 @@ class ShareReceiverActivity : ComponentActivity() {
         val dataClient = Wearable.getDataClient(this)
 
         nodeClient.connectedNodes.addOnSuccessListener { nodes ->
-            // ★追加:見つかったノードを記録
-            Log.e(
-                TAG,
-                "検出ノード数: ${nodes.size}, ノード: ${nodes.joinToString { it.displayName }}"
-            )
 
             // ノードが見つからない場合
             if (nodes.isEmpty()) {
-                Log.e(TAG, "ノードが見つかりません")
                 showFailureAndFinish(
                     "ウォッチを確認できませんでした"
                 )
@@ -721,21 +626,17 @@ class ShareReceiverActivity : ComponentActivity() {
 
             dataClient.putDataItem(putDataRequest)
                 .addOnSuccessListener {
-                    // ★追加:送信成功ログ
-                    Log.e(TAG, "DataItem送信成功")
                     showSuccessToastAndFinish()
                 }
                 // DataItem送信失敗
-                .addOnFailureListener { exception ->
-                    Log.e(TAG, "DataItem送信失敗: ${exception.message}", exception)
+                .addOnFailureListener {
                     showFailureAndFinish(
                         "ウォッチへの送信に失敗しました"
                     )
                 }
         }
         // ノード取得失敗
-        .addOnFailureListener { exception ->
-            Log.e(TAG, "ノード取得失敗: ${exception.message}", exception)
+        .addOnFailureListener {
             showFailureAndFinish(
                 "ウォッチとの接続確認に失敗しました"
             )
@@ -904,12 +805,6 @@ class ShareReceiverActivity : ComponentActivity() {
 
         } catch (e: Exception) {
 
-            Log.e(
-                TAG,
-                "署名証明書SHA-1取得失敗: ${e.message}",
-                e
-            )
-
             null
         }
     }
@@ -1019,21 +914,10 @@ class ShareReceiverActivity : ComponentActivity() {
                         "なし"
                     )
 
-                Log.e(
-                    TAG,
-                    "Geocoding API異常: status=$status, error=$errorMessage"
-                )
-
                 null
             }
 
         } catch (e: Exception) {
-
-            Log.e(
-                TAG,
-                "Geocoding API例外: ${e.message}",
-                e
-            )
 
             null
 
@@ -1116,31 +1000,6 @@ class ShareReceiverActivity : ComponentActivity() {
 
                             } else {
 
-                                val responseCode =
-                                    connection.responseCode
-
-                                val bodySnippet =
-                                    try {
-
-                                        connection.inputStream
-                                            .bufferedReader()
-                                            .use {
-                                                it.readText()
-                                                    .take(200)
-                                            }
-
-                                    } catch (
-                                        e: Exception
-                                    ) {
-
-                                        "(本文取得失敗: ${e.message})"
-                                    }
-
-                                Log.e(
-                                    TAG,
-                                    "リダイレクトなし。応答コード: $responseCode, 本文冒頭: $bodySnippet"
-                                )
-
                                 throw IllegalStateException(
                                     "短縮URL未解決"
                                 )
@@ -1164,17 +1023,10 @@ class ShareReceiverActivity : ComponentActivity() {
                 }
                 return currentUrl
             } catch (e: Exception) {
-                Log.e(TAG, "リダイレクト解決失敗(試行${attempt + 1}回目): ${e.message}")
-                if (attempt < 2) Thread.sleep(500) // ★変更:attempt < 1 → attempt < 2
+                if (attempt < 2) Thread.sleep(500)
             }
         }
         return null
-    }
-
-    private fun copyToClipboard(text: String) {
-        val clipboardManager = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        val clipData = ClipData.newPlainText("debug_url", text)
-        clipboardManager.setPrimaryClip(clipData)
     }
 
     override fun onDestroy() {

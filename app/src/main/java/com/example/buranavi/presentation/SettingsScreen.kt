@@ -26,11 +26,8 @@ import androidx.compose.ui.unit.dp
 import androidx.wear.compose.material.Icon
 import androidx.wear.compose.material3.IconButton
 import androidx.wear.compose.material.ListHeader
-import androidx.wear.compose.material.MaterialTheme
-import androidx.wear.compose.material.ScalingLazyColumn
 import androidx.wear.compose.material.Text
 import androidx.compose.foundation.Canvas
-import androidx.compose.ui.graphics.drawscope.rotate
 import kotlinx.coroutines.launch
 // ★追加:ON/OFFのトグルスイッチ付きの行を表示する部品
 import androidx.wear.compose.material.ToggleChip
@@ -39,7 +36,6 @@ import androidx.wear.compose.material.Switch
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.rememberScrollState
 import androidx.wear.compose.material.Chip
 import androidx.wear.compose.material.ChipDefaults

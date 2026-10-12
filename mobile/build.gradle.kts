@@ -26,8 +26,6 @@ android {
         versionCode = 1
         versionName = "1.0"
 
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-
         // ★追加:読み込んだAPIキーを、コード側から BuildConfig.GEOCODING_API_KEY として使えるようにする
         buildConfigField(
             "String",
@@ -64,11 +62,5 @@ dependencies {
     implementation(libs.ui)
     implementation(libs.ui.graphics)
     implementation(libs.ui.tooling.preview)
-    testImplementation(libs.junit)
-    androidTestImplementation(platform(libs.compose.bom))
-    androidTestImplementation(libs.espresso.core)
-    androidTestImplementation(libs.ext.junit)
-    androidTestImplementation(libs.ui.test.junit4)
-    debugImplementation(libs.ui.test.manifest)
     debugImplementation(libs.ui.tooling)
 }

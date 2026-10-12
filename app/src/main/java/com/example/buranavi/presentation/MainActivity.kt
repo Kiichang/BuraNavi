@@ -10,7 +10,6 @@ import android.hardware.SensorEventListener // ★追加:センサーの値変�
 import android.hardware.SensorManager // ★追加:各種センサーを管理・取得するためのシステムサービス
 import android.location.Location // ★追加:目的地との計算にLocationクラスを直接使うため
 import android.os.Bundle
-import android.util.Log
 import androidx.activity.ComponentActivity
 import com.google.android.horologist.compose.ambient.AmbientAware
 // ★追加: Health Services
@@ -208,13 +207,7 @@ class MainActivity :
                 batteryReceiver
             )
 
-        } catch (e: IllegalArgumentException) {
-
-            Log.w(
-                "BuraNavi",
-                "batteryReceiverは既に解除されています",
-                e
-            )
+        } catch (_: IllegalArgumentException) {
 
         } finally {
 
@@ -298,20 +291,6 @@ class MainActivity :
     private val stepsText = mutableStateOf("-")
     private val heartRateText = mutableStateOf("-")
 
-    // ★追加:歩数センサーは「起動からの累計歩数」を返す仕様のため、
-    //    アプリを開いた時点の歩数を基準値として記録しておき、そこからの増分を「今回の歩数」として表示する
-    // ★変更:1日の歩数に変更のため削除
-    // private var stepCounterBaseline: Float? = null
-
-    // ★追加:歩数センサーを取得して登録する関数
-    // ★変更:1日の歩数に変更のため削除
-    //    private fun registerStepCounterSensor() {
-    //        stepCounterSensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
-    //        stepCounterSensor?.also { sensor ->
-    //            sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL)
-    //        }
-    //    }
-
     // ★Health Services
     private val passiveMonitoringClient by lazy {
         HealthServices.getClient(this).passiveMonitoringClient
@@ -333,11 +312,6 @@ class MainActivity :
             override fun onRegistrationFailed(
                 throwable: Throwable
             ) {
-                Log.e(
-                    "HealthServices",
-                    "歩数取得の登録に失敗",
-                    throwable
-                )
                 stepsText.value = "-"
             }
         }
@@ -352,11 +326,6 @@ class MainActivity :
                     DataType.STEPS_DAILY !in
                     capabilities.supportedDataTypesPassiveMonitoring
                 ) {
-                    Log.e(
-                        "HealthServices",
-                        "STEPS_DAILYはこの端末でサポートされていません"
-                    )
-
                     stepsText.value = "-"
                     return@launch
                 }
@@ -373,13 +342,7 @@ class MainActivity :
                     passiveListenerCallback
                 )
 
-            } catch (e: Exception) {
-                Log.e(
-                    "HealthServices",
-                    "日次歩数の登録に失敗",
-                    e
-                )
-
+            } catch (_: Exception) {
                 stepsText.value = "-"
             }
         }
@@ -389,12 +352,8 @@ class MainActivity :
         try {
             passiveMonitoringClient
                 .clearPassiveListenerCallbackAsync()
-        } catch (e: Exception) {
-            Log.e(
-                "HealthServices",
-                "歩数取得の解除に失敗",
-                e
-            )
+        } catch (_: Exception) {
+
         }
     }
 
@@ -515,19 +474,11 @@ class MainActivity :
             }
         }
 
-    // ⑤ 画面に表示する「緯度・経度の文字列」を保持する変数
-    //    mutableStateOf = Composeにおいて「この値が変わったら画面を再描画してね」という目印をつけた変数
-    private val locationText = mutableStateOf("取得中...")
-
     // ★追加:距離(メートル)を表示するための状態変数
     // ★変更:文字列ではなく、生の距離(メートル)をFloat?型で保持する
     //    nullは「まだ計算されていない」状態を表す
     private val distanceInMeters = mutableStateOf<Float?>(null)
-    // ★追加:目的地への方位角(0〜360度、真北=0度)を表示するための状態変数
-    // private val bearingText = mutableStateOf("-")
 
-    // ★変更:bearingTextは矢印の角度計算に使うので、Float型の状態として持っておく
-    //    (画面表示用の文字列は別途Text側で丸めて使う)
     // 目的地への方位角(真北基準)
     private var targetBearing by
     mutableFloatStateOf(0f)
@@ -563,11 +514,6 @@ class MainActivity :
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // ★追加:一定時間操作がなくても、画面が消えたりウォッチフェイスに戻ったりしないようにする
-        //    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON:
-        //    「このActivityが表示されている間は、システムの自動スリープを無視して画面を点けたままにする」という指定
-        // window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         // ⑥ 位置情報クライアントを初期化(このActivityに紐付ける)
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
@@ -681,10 +627,6 @@ class MainActivity :
                     destinationFromStore
             }
 
-            // ★追加:保存されている見た目の設定を監視する
-            //     val appSettings by observeAppSettings(applicationContext)
-            //     .collectAsState(initial = AppSettings.DEFAULT)
-
             // ★追加:設定が変わるたびに、画面の常時点灯フラグを切り替える
             //    ON(Ambient使用):フラグを外す → システムのAmbient機能に任せる
             //    OFF(Ambient不使用):フラグを立てる → 画面を常にフル点灯させ、ウォッチフェイスに戻らないようにする
@@ -736,7 +678,7 @@ class MainActivity :
                     val isAmbient = appSettings.ambientModeEnabled && ambientStateUpdate.isAmbient
                     // ★追加:showSettingsScreenの値によって、表示する画面を丸ごと切り替える
                     if (showSettingsScreen) {
-                        // ★追加:設定画面(中身は次のステップで作り込みます。今は仮の内容)
+                        // 設定画面を表示
                         SettingsScreen(
                             currentSettings = appSettings,
                             onBack = {
@@ -1082,7 +1024,6 @@ class MainActivity :
                                             color = Color.White,
                                             fontSize = 12.sp
                                         )
-//                                        Spacer(modifier = Modifier.width(10.dp))
                                     } else {
                                         Row(verticalAlignment = Alignment.CenterVertically) {
                                             Icon(
@@ -1097,7 +1038,6 @@ class MainActivity :
                                                 color = if (isAmbient) Color.White else Color(effectiveTextColor),
                                                 fontSize = 12.sp
                                             )
-//                                            Spacer(modifier = Modifier.width(10.dp))
                                         }
                                     }
                                 }
@@ -1108,7 +1048,6 @@ class MainActivity :
                                             color = Color.White,
                                             fontSize = 12.sp
                                         )
-//                                        Spacer(modifier = Modifier.width(10.dp))
                                     } else {
                                         Row(verticalAlignment = Alignment.CenterVertically) {
                                             Icon(
@@ -1123,7 +1062,6 @@ class MainActivity :
                                                 color = if (isAmbient) Color.White else Color(effectiveTextColor),
                                                 fontSize = 12.sp
                                             )
-//                                            Spacer(modifier = Modifier.width(10.dp))
                                         }
                                     }
                                 }
@@ -1543,10 +1481,6 @@ class MainActivity :
                 isGpsStale.value =
                     !isSampleFresh
 
-                // 緯度(latitude)と経度(longitude)を文字列にして画面表示用の変数に代入
-                locationText.value =
-                    "緯度: ${location.latitude}\n経度: ${location.longitude}"
-
                 val geomagneticField =
                     GeomagneticField(
                         location.latitude.toFloat(),
@@ -1591,8 +1525,7 @@ class MainActivity :
                     // ★変更:整数の文字列化(toInt().toString())をやめ、生の値をそのまま保存
                     // ★修正:distanceMeters → rawDistanceMeters に変更し、クラスの状態変数(distanceInMeters)へ正しく代入する
                     distanceInMeters.value = rawDistanceMeters
-                    // bearingText.value = bearingInDegrees.toInt().toString()
-                    // ★追加ここまで
+
                     // ★追加:設定距離以内に入り、かつまだ通知していなければ振動+ボタン表示
                     // ★変更:位置情報の誤差が大きいときは、接近通知の判定を行わない
                     //    誤差の上限は「設定距離」と50mの小さい方(ただし最低15m)にする。
@@ -1729,20 +1662,13 @@ class MainActivity :
                 locationCallback,
                 mainLooper
             )
-            .addOnSuccessListener {
 
-                locationText.value =
-                    "位置情報のリクエスト成功。取得待ち..."
-
-            }
-            .addOnFailureListener { exception ->
+            .addOnFailureListener {
 
                 // 登録失敗したので、
                 // 次回再試行できるようfalseへ戻す
                 isLocationUpdatesRunning = false
 
-                locationText.value =
-                    "エラー: ${exception.message}"
             }
 
         val availability =
@@ -1763,9 +1689,6 @@ class MainActivity :
             playServicesUnavailable.value =
                 true
 
-            locationText.value =
-                "Google Play services利用不可: コード $resultCode"
-
         } else {
 
             playServicesUnavailable.value =
@@ -1783,29 +1706,5 @@ class MainActivity :
             .removeLocationUpdates(locationCallback)
 
         isLocationUpdatesRunning = false
-    }
-}
-
-// ★追加:設定画面のComposable関数
-//    @Composable:「これはCompose画面の部品です」という目印(必須のアノテーション)
-//    onBack: 「戻る」ボタンが押されたときに、呼び出し元(MainActivity)に伝えるための仕組み
-@Composable
-fun SettingsScreen(onBack: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(text = "設定画面(仮)", color = Color.White)
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // ★仮の「戻る」ボタン。次のステップで、ここに実際の設定項目を追加していきます
-            IconButton(onClick = onBack) {
-                Text(text = "戻る", color = Color.White)
-            }
-        }
     }
 }
