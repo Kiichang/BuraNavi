@@ -23,8 +23,8 @@ android {
         applicationId = "jp.buranavi.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.0.1"
 
         // ★追加:読み込んだAPIキーを、コード側から BuildConfig.GEOCODING_API_KEY として使えるようにする
         buildConfigField(

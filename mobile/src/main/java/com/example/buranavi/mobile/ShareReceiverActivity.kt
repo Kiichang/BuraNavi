@@ -32,6 +32,11 @@ import androidx.lifecycle.lifecycleScope
 import android.net.Uri
 import android.content.pm.PackageManager
 import java.security.MessageDigest
+import android.graphics.Color
+import android.view.Gravity
+import android.widget.LinearLayout
+import android.widget.ProgressBar
+import android.widget.TextView
 
 // 座標の取得手段を表す区分
 enum class LocationSource {
@@ -128,8 +133,15 @@ class ShareReceiverActivity : ComponentActivity() {
             val sharedText = receivedIntent.getStringExtra(Intent.EXTRA_TEXT)
 
             if (sharedText != null) {
-                extractCoordinatesAndProceed(sharedText)
+
+                showLoadingScreen()
+
+                extractCoordinatesAndProceed(
+                    sharedText
+                )
+
             } else {
+
                 finish()
             }
         } else {
@@ -1034,6 +1046,75 @@ class ShareReceiverActivity : ComponentActivity() {
         disconnectAllConnections()
 
         super.onDestroy()
+    }
+
+    private fun showLoadingScreen() {
+
+        val density =
+            resources.displayMetrics.density
+
+        val container =
+            LinearLayout(this).apply {
+
+                orientation =
+                    LinearLayout.VERTICAL
+
+                gravity =
+                    Gravity.CENTER
+
+                setPadding(
+                    (24 * density).toInt(),
+                    (24 * density).toInt(),
+                    (24 * density).toInt(),
+                    (24 * density).toInt()
+                )
+
+                setBackgroundColor(
+                    Color.WHITE
+                )
+            }
+
+        val progressBar =
+            ProgressBar(this).apply {
+
+                isIndeterminate = true
+            }
+
+        val message =
+            TextView(this).apply {
+
+                text =
+                    "目的地を取得しています…"
+
+                textSize =
+                    16f
+
+                setTextColor(
+                    Color.DKGRAY
+                )
+
+                gravity =
+                    Gravity.CENTER
+
+                setPadding(
+                    0,
+                    (16 * density).toInt(),
+                    0,
+                    0
+                )
+            }
+
+        container.addView(
+            progressBar
+        )
+
+        container.addView(
+            message
+        )
+
+        setContentView(
+            container
+        )
     }
 
 }
